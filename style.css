@@ -13,3 +13,24 @@ font-size:16px;
 li{
 margin:4px 0;
 }
+
+#progressContainer{
+width:100%;
+background:#ddd;
+height:20px;
+border-radius:5px;
+margin-top:10px;
+overflow:hidden;
+}
+
+#progressBar{
+height:100%;
+width:0%;
+background:#4CAF50;
+transition: width 0.3s ease;
+}
+
+#statusText{
+font-style: italic;
+margin-top:6px;
+}
