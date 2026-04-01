@@ -253,9 +253,9 @@ function isBasicLand(name) {
   return BASIC_LANDS.some((land) => normalizeCardName(land.name) === normalized);
 }
 
-function hasOwnedCard(collection, cardName) {
+function hasOwnedCard(collectionData, cardName) {
   const normalized = normalizeCardName(cardName);
-  return collection.has(normalized) || isBasicLand(cardName);
+  return collectionData.byNormalized.has(normalized) || isBasicLand(cardName);
 }
 
 async function parseCSV(file) {
@@ -279,7 +279,8 @@ async function parseCSV(file) {
           throw new Error("CSV must contain Name and Quantity columns.");
         }
 
-        const collection = new Map();
+        const byNormalized = new Map();
+        const originals = [];
 
         for (let i = 1; i < lines.length; i++) {
           const cols = splitCsvLine(lines[i]);
@@ -294,10 +295,19 @@ async function parseCSV(file) {
           if (!Number.isFinite(quantity) || quantity <= 0) continue;
 
           const normalizedName = normalizeCardName(rawName);
-          collection.set(normalizedName, (collection.get(normalizedName) || 0) + quantity);
+
+          byNormalized.set(normalizedName, (byNormalized.get(normalizedName) || 0) + quantity);
+          originals.push({
+            rawName,
+            normalizedName,
+            quantity
+          });
         }
 
-        resolve(collection);
+        resolve({
+          byNormalized,
+          originals
+        });
       } catch (error) {
         reject(error);
       }
@@ -795,6 +805,29 @@ function scoreCard(card, edhrecCard, commanderThemes) {
   return synergyScore + popularityScore + roleBonus + curveBonus + themeBonus;
 }
 
+function scoreFallbackCard(card, commanderThemes) {
+  let score = 5;
+
+  const role = detectRole(card);
+  if (role === "ramp") score += 4;
+  else if (role === "draw") score += 4;
+  else if (role === "removal") score += 4;
+  else if (role === "wipe") score += 3;
+
+  if (card.cmc <= 2) score += 2;
+  else if (card.cmc <= 4) score += 3;
+  else if (card.cmc <= 6) score += 1;
+
+  const tags = detectCardTags(card);
+  for (const tag of tags) {
+    if (commanderThemes.includes(tag)) {
+      score += 4;
+    }
+  }
+
+  return score;
+}
+
 function legalForCommander(cardColors, commanderColors) {
   for (const color of cardColors) {
     if (!commanderColors.includes(color)) {
@@ -848,11 +881,16 @@ function evaluateNonbasicLand(card, commanderColors) {
   };
 }
 
-function buildNonbasicManaBase(collection, ownedCardData, commanderColors, targetLandCount) {
+function buildNonbasicManaBase(collectionData, allOwnedCardData, commanderColors, targetLandCount) {
   const landPool = [];
+  const seen = new Set();
 
-  for (const [normalizedName, quantity] of collection.entries()) {
-    const card = ownedCardData.get(normalizedName);
+  for (const entry of collectionData.originals) {
+    const normalizedName = entry.normalizedName;
+    if (seen.has(normalizedName)) continue;
+    seen.add(normalizedName);
+
+    const card = allOwnedCardData.get(normalizedName);
     if (!card) continue;
     if (!card.type.includes("land")) continue;
     if (isBasicLand(card.name)) continue;
@@ -861,27 +899,12 @@ function buildNonbasicManaBase(collection, ownedCardData, commanderColors, targe
     const landCandidate = evaluateNonbasicLand(card, commanderColors);
     if (!landCandidate) continue;
 
-    const copiesAllowed = Math.min(quantity, 1);
-    for (let i = 0; i < copiesAllowed; i++) {
-      landPool.push({ ...landCandidate });
-    }
+    landPool.push({ ...landCandidate });
   }
 
   landPool.sort((a, b) => b.score - a.score);
 
-  const selected = [];
-  const used = new Set();
-
-  for (const land of landPool) {
-    if (selected.length >= targetLandCount) break;
-    const key = normalizeCardName(land.name);
-    if (used.has(key)) continue;
-
-    selected.push(land);
-    used.add(key);
-  }
-
-  return selected;
+  return landPool.slice(0, targetLandCount);
 }
 
 function buildBasicManaBase(commanderColors, landCountNeeded, selectedNonbasics = []) {
@@ -936,15 +959,15 @@ function buildBasicManaBase(commanderColors, landCountNeeded, selectedNonbasics 
 function buildDeckFromScoredPool(
   scoredNonlands,
   commanderColors,
-  collection,
+  collectionData,
   allOwnedCardData,
   commanderThemes,
   commanderName
 ) {
   const deck = [];
   const usedNames = new Set();
-
   const normalizedCommander = normalizeCardName(commanderName);
+
   const targetLandCount = recommendLandCount(commanderColors);
   const targetNonlandCount = 99 - targetLandCount;
 
@@ -975,7 +998,6 @@ function buildDeckFromScoredPool(
     byRole[role].sort((a, b) => b.score - a.score);
   }
 
-  // Step 1: fill role targets from EDHREC-scored pool
   for (const [role, count] of Object.entries(targets)) {
     let addedForRole = 0;
 
@@ -994,8 +1016,7 @@ function buildDeckFromScoredPool(
     }
   }
 
-  // Step 2: fill remaining nonland slots from the rest of the EDHREC pool
-  const remainingRanked = [
+  const rankedEdhrecPool = [
     ...byRole.synergy,
     ...byRole.ramp,
     ...byRole.draw,
@@ -1003,7 +1024,7 @@ function buildDeckFromScoredPool(
     ...byRole.wipe
   ].sort((a, b) => b.score - a.score);
 
-  for (const card of remainingRanked) {
+  for (const card of rankedEdhrecPool) {
     if (deck.length >= targetNonlandCount) break;
 
     const key = normalizeCardName(card.name);
@@ -1014,11 +1035,16 @@ function buildDeckFromScoredPool(
     usedNames.add(key);
   }
 
-  // Step 3: if still short, backfill from ALL legal owned nonland cards in collection
   if (deck.length < targetNonlandCount) {
     const fallbackPool = [];
+    const seenFallback = new Set();
 
-    for (const [normalizedName, quantity] of collection.entries()) {
+    for (const entry of collectionData.originals) {
+      const normalizedName = entry.normalizedName;
+
+      if (seenFallback.has(normalizedName)) continue;
+      seenFallback.add(normalizedName);
+
       if (normalizedName === normalizedCommander) continue;
       if (usedNames.has(normalizedName)) continue;
 
@@ -1027,18 +1053,14 @@ function buildDeckFromScoredPool(
       if (card.type.includes("land")) continue;
       if (!legalForCommander(card.colors, commanderColors)) continue;
 
-      // singleton for nonbasic/nonland commander deck cards
-      const copiesAllowed = 1;
-      for (let i = 0; i < copiesAllowed; i++) {
-        fallbackPool.push({
-          name: card.name,
-          role: detectRole(card),
-          score: scoreFallbackCard(card, commanderThemes),
-          type: card.type,
-          cmc: card.cmc,
-          colors: card.colors
-        });
-      }
+      fallbackPool.push({
+        name: card.name,
+        role: detectRole(card),
+        score: scoreFallbackCard(card, commanderThemes),
+        type: card.type,
+        cmc: card.cmc,
+        colors: card.colors
+      });
     }
 
     fallbackPool.sort((a, b) => b.score - a.score);
@@ -1055,15 +1077,13 @@ function buildDeckFromScoredPool(
     }
   }
 
-  // Step 4: build nonbasic mana base from owned lands
   const selectedNonbasicLands = buildNonbasicManaBase(
-    collection,
+    collectionData,
     allOwnedCardData,
     commanderColors,
     targetLandCount
   );
 
-  // Step 5: if short on total lands, fill with basics
   let remainingLandCount = targetLandCount - selectedNonbasicLands.length;
   if (remainingLandCount < 0) remainingLandCount = 0;
 
@@ -1075,18 +1095,15 @@ function buildDeckFromScoredPool(
 
   let finalDeck = [...deck, ...selectedNonbasicLands, ...basicLands];
 
-  // Step 6: hard guarantee exactly 99 cards by adding extra basics if still short
-  if (finalDeck.length < 99) {
-    const extraBasicsNeeded = 99 - finalDeck.length;
-    const extraBasics = buildBasicManaBase(
+  while (finalDeck.length < 99) {
+    const extra = buildBasicManaBase(
       commanderColors,
-      extraBasicsNeeded,
-      [...selectedNonbasicLands, ...basicLands]
+      1,
+      finalDeck.filter((c) => c.role === "land")
     );
-    finalDeck = [...finalDeck, ...extraBasics];
+    finalDeck.push(...extra);
   }
 
-  // Step 7: if somehow over 99, trim from the end
   if (finalDeck.length > 99) {
     finalDeck = finalDeck.slice(0, 99);
   }
@@ -1221,7 +1238,7 @@ async function generateDeck() {
     logMessage("Parsing uploaded CSV.");
     updateProgress(5, "Parsing CSV...");
     const collection = await parseCSV(file);
-    logMessage(`Parsed ${collection.size} unique cards from CSV.`);
+    logMessage(`Parsed ${collection.byNormalized.size} unique cards from CSV.`);
 
     updateProgress(10, "Validating commander...");
     logMessage(`Fetching commander info for "${commanderName}" from Scryfall.`);
@@ -1270,14 +1287,14 @@ async function generateDeck() {
 
     logMessage(`Received metadata for ${ownedCardData.size} owned candidate cards.`);
 
-    updateProgress(66, "Fetching land metadata...");
-    const allOwnedNames = Array.from(collection.keys());
-    logMessage("Loading metadata for all owned cards so the mana base can use real nonbasic lands.");
+    updateProgress(66, "Fetching all owned card metadata...");
+    const allOwnedNames = collection.originals.map((x) => x.rawName);
+    logMessage("Loading metadata for all owned cards so the builder can backfill missing slots and use real nonbasic lands.");
     const allOwnedCardData = await fetchCardDataBatchWithProgress(
       allOwnedNames,
       (done, total) => {
         const pct = 66 + Math.floor((done / Math.max(total, 1)) * 10);
-        updateProgress(pct, "Fetching land metadata...", `Fetched ${done} / ${total}`);
+        updateProgress(pct, "Fetching all owned card metadata...", `Fetched ${done} / ${total}`);
       }
     );
 
@@ -1332,12 +1349,21 @@ async function generateDeck() {
       }
     }
 
-    logMessage(`After legality checks, ${scoredNonlands.length} nonland cards remain in the candidate pool.`);
+    logMessage(`After legality checks, ${scoredNonlands.length} nonland cards remain in the EDHREC candidate pool.`);
 
     updateProgress(90, "Building deck structure and mana base...");
-    logMessage("Selecting spells, choosing owned nonbasic lands, and filling the rest with basics.");
-    const finalDeck = buildDeckFromScoredPool(scoredNonlands, commanderData.colors, collection, allOwnedCardData, commanderThemes, commanderData.name);
+    logMessage("Selecting EDHREC matches, backfilling from the rest of your collection, then filling remaining slots with lands.");
+    const finalDeck = buildDeckFromScoredPool(
+      scoredNonlands,
+      commanderData.colors,
+      collection,
+      allOwnedCardData,
+      commanderThemes,
+      commanderData.name
+    );
+
     logMessage(`Built final deck with ${finalDeck.length} cards.`);
+    logMessage(`Final deck breakdown: ${finalDeck.filter(c => c.role !== "land").length} nonlands, ${finalDeck.filter(c => c.role === "land").length} lands.`);
 
     updateProgress(97, "Rendering results...");
     displayDeckSummary(finalDeck, commanderData.name, commanderData.colors);
