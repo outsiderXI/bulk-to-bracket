@@ -687,9 +687,7 @@ function getCommanderStrategyProfile(commanderName, commanderThemes, commanderCo
     profile.wantsSacrifice = true;
     profile.wantsTribal = true;
     profile.wantsGoWide = true;
-    if (!profile.tribalTypes.includes("goblin")) {
-      profile.tribalTypes.push("goblin");
-    }
+    if (!profile.tribalTypes.includes("goblin")) profile.tribalTypes.push("goblin");
   }
 
   return profile;
@@ -991,26 +989,49 @@ function evaluateNonbasicLand(card, commanderColors, strategyProfile) {
 
   const produced = Array.isArray(card.producedMana) ? card.producedMana : [];
   const relevantProduced = produced.filter((c) => commanderColors.includes(c));
+  const normalizedName = normalizeCardName(card.name);
+  const text = card.text;
 
   let score = 0;
-  score += relevantProduced.length * 5;
 
-  const lowerName = card.name.toLowerCase();
-  const normalizedName = normalizeCardName(card.name);
+  // Base value: how many relevant colors it actually makes
+  score += relevantProduced.length * 4;
 
+  // Strong universal lands
   if (normalizedName === "command tower") score += 10;
-  if (normalizedName === "exotic orchard") score += 8;
-  if (lowerName.includes("triome")) score += 8;
-  if (lowerName.includes("pathway")) score += 6;
-  if (card.text.includes("add one mana of any color")) score += 7;
-  if (card.text.includes("add one mana of any type")) score += 6;
+  if (normalizedName === "exotic orchard") score += 7;
+  if (normalizedName === "path of ancestry" && strategyProfile.wantsTribal) score += 9;
+  if (normalizedName === "secluded courtyard" && strategyProfile.wantsTribal) score += 8;
+  if (normalizedName === "unclaimed territory" && strategyProfile.wantsTribal) score += 8;
 
+  // Tri-lands / triomes / pathways / strong dual patterns
+  if (card.name.toLowerCase().includes("triome")) score += 8;
+  if (card.name.toLowerCase().includes("pathway")) score += 6;
+
+  // Good text boxes
+  if (text.includes("add one mana of any color")) score += 6;
+  if (text.includes("add one mana of any type")) score += 5;
+
+  // Land synergy
+  if (strategyProfile.wantsTokens && text.includes("create") && text.includes("token")) score += 5;
+  if (strategyProfile.wantsSacrifice && text.includes("sacrifice")) score += 4;
+  if (strategyProfile.wantsGoWide && text.includes("creature")) score += 2;
+
+  // Penalties
+  if (text.includes("enters tapped")) score -= 4;
+  if (text.includes("unless you control")) score -= 1;
+  if (text.includes("pay 1 life")) score -= 0.5;
+  if (relevantProduced.length === 0) score -= 20;
+
+  // In mono-color decks, nonbasics should need a real reason
   if (strategyProfile.monoColor) {
-    if (!isSynergisticMonoColorLand(card, commanderColors, strategyProfile)) score -= 12;
-    if (isLowPriorityMonoColorFixer(card, commanderColors)) score -= 12;
+    if (!isSynergisticMonoColorLand(card, commanderColors, strategyProfile)) {
+      score -= 12;
+    }
+    if (isLowPriorityMonoColorFixer(card, commanderColors)) {
+      score -= 12;
+    }
   }
-
-  score -= landEntersTappedPenalty(card);
 
   return {
     name: card.name,
@@ -1039,16 +1060,29 @@ function buildNonbasicManaBase(collectionData, allOwnedCardData, commanderColors
 
     const landCandidate = evaluateNonbasicLand(card, commanderColors, strategyProfile);
     if (!landCandidate) continue;
-    landPool.push({ ...landCandidate });
+
+    landPool.push(landCandidate);
   }
 
   landPool.sort((a, b) => b.score - a.score);
 
-  if (strategyProfile.monoColor) {
-    return landPool.filter((l) => l.score > 0).slice(0, Math.min(8, targetLandCount));
-  }
+  // Only lands above this threshold beat basics often enough
+  const threshold =
+    commanderColors.length === 1 ? 7 :
+    commanderColors.length === 2 ? 6 :
+    commanderColors.length === 3 ? 5 :
+    4;
 
-  return landPool.slice(0, targetLandCount);
+  const filtered = landPool.filter((land) => land.score >= threshold);
+
+  // Keep some basics even in multicolor decks
+  const maxNonbasicCount =
+    commanderColors.length === 1 ? Math.min(6, targetLandCount) :
+    commanderColors.length === 2 ? Math.min(12, targetLandCount) :
+    commanderColors.length === 3 ? Math.min(16, targetLandCount) :
+    Math.min(20, targetLandCount);
+
+  return filtered.slice(0, maxNonbasicCount);
 }
 
 function buildBasicManaBase(commanderColors, landCountNeeded, selectedNonbasics = []) {
@@ -1145,6 +1179,7 @@ function buildDeckFromScoredPool(
 
     for (const card of byRole[role]) {
       if (deck.length >= targetNonlandCount) break;
+
       const key = normalizeCardName(card.name);
       if (usedNames.has(key) || key === normalizedCommander) continue;
 
@@ -1166,6 +1201,7 @@ function buildDeckFromScoredPool(
 
   for (const card of rankedEdhrecPool) {
     if (deck.length >= targetNonlandCount) break;
+
     const key = normalizeCardName(card.name);
     if (usedNames.has(key) || key === normalizedCommander) continue;
 
@@ -1245,6 +1281,7 @@ function buildDeckFromScoredPool(
 
     for (const card of fallbackPool) {
       if (deck.length >= targetNonlandCount) break;
+
       const key = normalizeCardName(card.name);
       if (usedNames.has(key) || key === normalizedCommander) continue;
 
@@ -1397,9 +1434,11 @@ function scryfallCardUrl(cardName) {
 function generateMoxfieldExport(deck, commanderName) {
   const merged = mergeDeckCounts(deck);
   const lines = [`1 ${commanderName}`];
+
   for (const item of merged) {
     lines.push(`${item.count} ${item.name}`);
   }
+
   return lines.join("\n");
 }
 
@@ -1408,6 +1447,7 @@ function displayExportPreview(deck, commanderName) {
   preview.innerHTML = "";
 
   const merged = mergeDeckCounts(deck);
+
   const commanderLine = document.createElement("div");
   commanderLine.className = "preview-line";
   commanderLine.innerHTML = `<span class="preview-qty">1</span> <a href="${scryfallCardUrl(commanderName)}" target="_blank" rel="noopener noreferrer">${escapeHtml(commanderName)}</a>`;
