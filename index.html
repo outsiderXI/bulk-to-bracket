@@ -28,6 +28,12 @@
       <button id="generateBtn" type="button">Generate Deck</button>
     </div>
 
+    <div id="emptyState" class="panel empty-state">
+      <h2>How it works</h2>
+      <p>Choose a legal commander, upload a ManaBox CSV of cards you own, and the app will build a legal Commander deck from your collection.</p>
+      <p>It uses your owned cards, commander themes, EDHREC synergy, and collection-based fallback logic to fill out the list.</p>
+    </div>
+
     <div class="panel">
       <h2>Progress</h2>
       <div id="progressContainer">
@@ -39,6 +45,19 @@
       <div class="log-wrap">
         <div class="log-header">Activity Log</div>
         <div id="activityLog" class="activity-log"></div>
+      </div>
+    </div>
+
+    <div id="postBuildControls" class="panel hidden">
+      <h2>Regenerate With Different Priorities</h2>
+      <div class="priority-buttons">
+        <button class="priority-btn" data-mode="balanced" type="button">Balanced</button>
+        <button class="priority-btn" data-mode="more-synergistic" type="button">More Synergistic</button>
+        <button class="priority-btn" data-mode="more-creatures" type="button">More Creatures</button>
+        <button class="priority-btn" data-mode="more-casual" type="button">More Casual</button>
+        <button class="priority-btn" data-mode="stronger-mana-base" type="button">Stronger Mana Base</button>
+        <button class="priority-btn" data-mode="fewer-staples" type="button">Fewer Staples</button>
+        <button class="priority-btn" data-mode="more-tribal" type="button">More Tribal</button>
       </div>
     </div>
 
@@ -55,17 +74,19 @@
           <div id="colorPips" class="color-pips"></div>
 
           <h3 class="themes-heading">Detected Themes</h3>
-          <ul id="themes"></ul>
+          <div id="themeChips" class="theme-chips"></div>
         </div>
       </div>
 
       <div class="panel">
-        <h2>Moxfield Export</h2>
+        <h2>Deck Report</h2>
         <div id="deckSummary" class="deck-summary"></div>
         <div id="deckBracket" class="deck-bracket"></div>
         <div id="deckGameChangers" class="deck-game-changers"></div>
+        <div id="buildBreakdown" class="build-breakdown"></div>
+        <div id="warningsPanel" class="warnings-panel"></div>
 
-        <div class="preview-heading">Preview</div>
+        <div class="preview-heading">Grouped Preview</div>
         <div id="exportPreview" class="export-preview"></div>
 
         <div class="preview-heading">Plain Text Export</div>
