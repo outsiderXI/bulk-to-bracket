@@ -25,7 +25,7 @@
       <label for="csvFile">Upload ManaBox CSV</label>
       <input id="csvFile" type="file" accept=".csv" />
 
-      <button id="generateBtn">Generate Deck</button>
+      <button id="generateBtn" type="button">Generate Deck</button>
     </div>
 
     <div class="panel">
@@ -53,6 +53,13 @@
         <div id="deckSummary" class="deck-summary"></div>
         <ul id="deck"></ul>
       </div>
+    </div>
+
+    <div class="panel">
+      <h2>Moxfield Export</h2>
+      <p>Copy this and paste it into Moxfield.</p>
+      <textarea id="moxfieldExport" class="export-box" readonly></textarea>
+      <button id="copyExportBtn" type="button">Copy Export</button>
     </div>
   </div>
 
