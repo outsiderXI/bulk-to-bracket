@@ -15,7 +15,7 @@ body {
   padding: 24px;
 }
 
-h1, h2 {
+h1, h2, h3 {
   margin-top: 0;
 }
 
@@ -106,12 +106,12 @@ button:disabled {
   background: #0b1220;
   border: 1px solid #374151;
   border-radius: 8px;
-  height: 220px;
+  height: 130px;
   overflow-y: auto;
   padding: 10px;
   font-family: Consolas, Monaco, monospace;
-  font-size: 13px;
-  line-height: 1.45;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .log-line {
@@ -121,7 +121,7 @@ button:disabled {
 
 .results-grid {
   display: grid;
-  grid-template-columns: 1fr 2fr;
+  grid-template-columns: 320px 1fr;
   gap: 20px;
 }
 
@@ -176,23 +176,21 @@ li {
 }
 
 .export-box {
-  min-height: 320px;
+  min-height: 520px;
   font-family: Consolas, Monaco, monospace;
   font-size: 13px;
   line-height: 1.45;
   resize: vertical;
 }
 
-.commander-card-wrap {
+.commander-column {
   display: flex;
-  gap: 20px;
-  align-items: flex-start;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .commander-image {
-  width: 265px;
-  max-width: 100%;
+  width: 100%;
   border-radius: 16px;
   border: 1px solid #374151;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
@@ -201,7 +199,12 @@ li {
 .commander-meta {
   color: #cbd5e1;
   white-space: pre-line;
-  min-width: 220px;
+  font-size: 14px;
+}
+
+.themes-heading {
+  margin-top: 6px;
+  margin-bottom: 0;
 }
 
 @media (max-width: 900px) {
