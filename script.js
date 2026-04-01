@@ -147,6 +147,7 @@ async function onCommanderInput() {
       const legalMatches = await filterCommanderAutocomplete(matches);
       renderAutocomplete(legalMatches);
     } catch (error) {
+      console.error(error);
       hideAutocomplete();
     }
   }, 180);
@@ -381,7 +382,7 @@ async function getCommander(name) {
 
 async function getEDHREC(commanderName) {
   const slug = toEdhrecSlug(commanderName);
-  const response = await fetch(`${EDHREC_BASE}${slug}.json`);
+  const response = await fetch(`${EDHREC_BASE}${slug}.json}`);
 
   if (!response.ok) {
     throw new Error("Failed to fetch EDHREC commander data.");
@@ -652,6 +653,136 @@ async function detectCommanderThemes(edhrecCards) {
   return [...normalThemes, ...tribalThemes].slice(0, 6);
 }
 
+function getCommanderStrategyProfile(commanderName, commanderThemes, commanderColors) {
+  const normalizedName = normalizeCardName(commanderName);
+
+  const profile = {
+    wantsCreatures: false,
+    wantsTokens: false,
+    wantsSacrifice: false,
+    wantsTribal: false,
+    tribalTypes: [],
+    wantsCantrips: false,
+    wantsCounters: false,
+    wantsGroupHug: false,
+    wantsGoWide: false,
+    monoColor: commanderColors.length === 1
+  };
+
+  if (commanderThemes.includes("tokens")) profile.wantsTokens = true;
+  if (commanderThemes.includes("sacrifice")) profile.wantsSacrifice = true;
+  if (commanderThemes.includes("goWide")) profile.wantsGoWide = true;
+  if (commanderThemes.includes("cantrips")) profile.wantsCantrips = true;
+  if (commanderThemes.includes("counters")) profile.wantsCounters = true;
+  if (commanderThemes.includes("group hug")) profile.wantsGroupHug = true;
+
+  const tribalThemes = commanderThemes.filter((t) => t.endsWith(" tribal"));
+  if (tribalThemes.length) {
+    profile.wantsTribal = true;
+    profile.wantsCreatures = true;
+    profile.tribalTypes = tribalThemes.map((t) => t.replace(" tribal", ""));
+  }
+
+  if (profile.wantsTokens || profile.wantsSacrifice || profile.wantsGoWide) {
+    profile.wantsCreatures = true;
+  }
+
+  if (normalizedName.includes("ib halfheart")) {
+    profile.wantsCreatures = true;
+    profile.wantsTokens = true;
+    profile.wantsSacrifice = true;
+    profile.wantsTribal = true;
+    profile.wantsGoWide = true;
+    if (!profile.tribalTypes.includes("goblin")) {
+      profile.tribalTypes.push("goblin");
+    }
+  }
+
+  return profile;
+}
+
+function isCreatureCard(card) {
+  return card.type.includes("creature");
+}
+
+function hasTribalType(card, tribe) {
+  const pattern = new RegExp(`\\b${tribe}\\b`);
+  return pattern.test(`${card.type} ${card.text}`);
+}
+
+function isTokenMaker(card) {
+  return card.text.includes("create") && card.text.includes("token");
+}
+
+function isSacrificeCard(card) {
+  return card.text.includes("sacrifice");
+}
+
+function isSynergisticMonoColorLand(card, commanderColors, profile) {
+  const name = normalizeCardName(card.name);
+  const text = card.text;
+
+  if (commanderColors.length !== 1) return true;
+
+  if (name === "path of ancestry" && profile.wantsTribal) return true;
+  if (name === "secluded courtyard" && profile.wantsTribal) return true;
+  if (name === "unclaimed territory" && profile.wantsTribal) return true;
+  if (name === "dwarven mine" && commanderColors[0] === "R") return true;
+  if (name === "mines of moria" && profile.wantsTokens) return true;
+  if (text.includes("create") && text.includes("token")) return true;
+  if (text.includes("sacrifice") || text.includes("whenever a creature dies")) return true;
+
+  return false;
+}
+
+function isLowPriorityMonoColorFixer(card, commanderColors) {
+  if (commanderColors.length !== 1) return false;
+
+  const name = normalizeCardName(card.name);
+  const lowPriorityNames = new Set([
+    "command tower",
+    "exotic orchard",
+    "rupture spire",
+    "gateway plaza",
+    "transguild promenade",
+    "unclaimed territory",
+    "secluded courtyard",
+    "path of ancestry",
+    "thriving bluff",
+    "public thoroughfare",
+    "vibrant cityscape",
+    "tendo ice bridge",
+    "uncharted haven",
+    "command bridge",
+    "crossroads village",
+    "capital city",
+    "gallifrey council chamber",
+    "opal palace",
+    "corrupted crossroads",
+    "cascading cataracts",
+    "secluded starforge"
+  ]);
+
+  return lowPriorityNames.has(name);
+}
+
+function isLowPriorityMonoColorRock(card, commanderColors, profile) {
+  if (commanderColors.length !== 1) return false;
+  if (!card.type.includes("artifact")) return false;
+
+  const name = normalizeCardName(card.name);
+
+  if (name === "arcane signet") return true;
+  if (name === "commander's sphere") return true;
+  if (name === "heraldic banner") return false;
+  if (name === "sol ring") return false;
+  if (name === "mind stone") return false;
+  if (name === "skullclamp") return false;
+  if (name === "idol of oblivion" && profile.wantsTokens) return false;
+
+  return false;
+}
+
 function detectRole(card) {
   const text = card.text;
   const type = card.type;
@@ -764,7 +895,7 @@ function detectCardTags(card) {
   return tags;
 }
 
-function scoreCard(card, edhrecCard, commanderThemes) {
+function scoreCard(card, edhrecCard, commanderThemes, strategyProfile, commanderColors) {
   const synergyScore = Number(edhrecCard.synergy || 0) * 6;
   const popularityScore = Math.min(Number(edhrecCard.decks || 0) / 1200, 18);
 
@@ -777,8 +908,8 @@ function scoreCard(card, edhrecCard, commanderThemes) {
   else if (role === "wipe") roleBonus = 3;
 
   let curveBonus = 0;
-  if (card.cmc <= 2) curveBonus = 2;
-  else if (card.cmc <= 4) curveBonus = 3;
+  if (card.cmc <= 2) curveBonus = 3;
+  else if (card.cmc <= 4) curveBonus = 4;
   else if (card.cmc <= 6) curveBonus = 1;
 
   const tags = detectCardTags(card);
@@ -787,6 +918,30 @@ function scoreCard(card, edhrecCard, commanderThemes) {
   for (const tag of tags) {
     if (commanderThemes.includes(tag)) {
       themeBonus += 5;
+    }
+  }
+
+  if (strategyProfile.wantsCreatures && isCreatureCard(card)) {
+    themeBonus += 5;
+  }
+
+  if (strategyProfile.wantsTokens && isTokenMaker(card)) {
+    themeBonus += 7;
+  }
+
+  if (strategyProfile.wantsSacrifice && isSacrificeCard(card)) {
+    themeBonus += 6;
+  }
+
+  if (strategyProfile.wantsGoWide && isCreatureCard(card)) {
+    themeBonus += 3;
+  }
+
+  if (strategyProfile.wantsTribal) {
+    for (const tribe of strategyProfile.tribalTypes) {
+      if (hasTribalType(card, tribe)) {
+        themeBonus += 10;
+      }
     }
   }
 
@@ -802,10 +957,15 @@ function scoreCard(card, edhrecCard, commanderThemes) {
     themeBonus += 3;
   }
 
-  return synergyScore + popularityScore + roleBonus + curveBonus + themeBonus;
+  let penalty = 0;
+  if (isLowPriorityMonoColorRock(card, commanderColors, strategyProfile)) {
+    penalty += 8;
+  }
+
+  return synergyScore + popularityScore + roleBonus + curveBonus + themeBonus - penalty;
 }
 
-function scoreFallbackCard(card, commanderThemes) {
+function scoreFallbackCard(card, commanderThemes, strategyProfile, commanderColors) {
   let score = 5;
 
   const role = detectRole(card);
@@ -814,8 +974,8 @@ function scoreFallbackCard(card, commanderThemes) {
   else if (role === "removal") score += 4;
   else if (role === "wipe") score += 3;
 
-  if (card.cmc <= 2) score += 2;
-  else if (card.cmc <= 4) score += 3;
+  if (card.cmc <= 2) score += 3;
+  else if (card.cmc <= 4) score += 4;
   else if (card.cmc <= 6) score += 1;
 
   const tags = detectCardTags(card);
@@ -823,6 +983,34 @@ function scoreFallbackCard(card, commanderThemes) {
     if (commanderThemes.includes(tag)) {
       score += 4;
     }
+  }
+
+  if (strategyProfile.wantsCreatures && isCreatureCard(card)) {
+    score += 6;
+  }
+
+  if (strategyProfile.wantsTokens && isTokenMaker(card)) {
+    score += 8;
+  }
+
+  if (strategyProfile.wantsSacrifice && isSacrificeCard(card)) {
+    score += 7;
+  }
+
+  if (strategyProfile.wantsGoWide && isCreatureCard(card)) {
+    score += 3;
+  }
+
+  if (strategyProfile.wantsTribal) {
+    for (const tribe of strategyProfile.tribalTypes) {
+      if (hasTribalType(card, tribe)) {
+        score += 12;
+      }
+    }
+  }
+
+  if (isLowPriorityMonoColorRock(card, commanderColors, strategyProfile)) {
+    score -= 8;
   }
 
   return score;
@@ -850,7 +1038,7 @@ function landEntersTappedPenalty(card) {
   return 0;
 }
 
-function evaluateNonbasicLand(card, commanderColors) {
+function evaluateNonbasicLand(card, commanderColors, strategyProfile) {
   if (!card.type.includes("land")) return null;
   if (isBasicLand(card.name)) return null;
 
@@ -861,13 +1049,23 @@ function evaluateNonbasicLand(card, commanderColors) {
   score += relevantProduced.length * 5;
 
   const lowerName = card.name.toLowerCase();
+  const normalizedName = normalizeCardName(card.name);
 
-  if (normalizeCardName(card.name) === "command tower") score += 10;
-  if (normalizeCardName(card.name) === "exotic orchard") score += 8;
+  if (normalizedName === "command tower") score += 10;
+  if (normalizedName === "exotic orchard") score += 8;
   if (lowerName.includes("triome")) score += 8;
   if (lowerName.includes("pathway")) score += 6;
   if (card.text.includes("add one mana of any color")) score += 7;
   if (card.text.includes("add one mana of any type")) score += 6;
+
+  if (strategyProfile.monoColor) {
+    if (!isSynergisticMonoColorLand(card, commanderColors, strategyProfile)) {
+      score -= 12;
+    }
+    if (isLowPriorityMonoColorFixer(card, commanderColors)) {
+      score -= 12;
+    }
+  }
 
   score -= landEntersTappedPenalty(card);
 
@@ -881,7 +1079,7 @@ function evaluateNonbasicLand(card, commanderColors) {
   };
 }
 
-function buildNonbasicManaBase(collectionData, allOwnedCardData, commanderColors, targetLandCount) {
+function buildNonbasicManaBase(collectionData, allOwnedCardData, commanderColors, targetLandCount, strategyProfile) {
   const landPool = [];
   const seen = new Set();
 
@@ -896,13 +1094,17 @@ function buildNonbasicManaBase(collectionData, allOwnedCardData, commanderColors
     if (isBasicLand(card.name)) continue;
     if (!legalForCommander(card.colors, commanderColors)) continue;
 
-    const landCandidate = evaluateNonbasicLand(card, commanderColors);
+    const landCandidate = evaluateNonbasicLand(card, commanderColors, strategyProfile);
     if (!landCandidate) continue;
 
     landPool.push({ ...landCandidate });
   }
 
   landPool.sort((a, b) => b.score - a.score);
+
+  if (strategyProfile.monoColor) {
+    return landPool.filter((l) => l.score > 0).slice(0, Math.min(8, targetLandCount));
+  }
 
   return landPool.slice(0, targetLandCount);
 }
@@ -967,6 +1169,7 @@ function buildDeckFromScoredPool(
   const deck = [];
   const usedNames = new Set();
   const normalizedCommander = normalizeCardName(commanderName);
+  const strategyProfile = getCommanderStrategyProfile(commanderName, commanderThemes, commanderColors);
 
   const targetLandCount = recommendLandCount(commanderColors);
   const targetNonlandCount = 99 - targetLandCount;
@@ -977,6 +1180,10 @@ function buildDeckFromScoredPool(
     removal: 8,
     wipe: 3
   };
+
+  const minimumCreatureCount = strategyProfile.wantsCreatures
+    ? (strategyProfile.wantsTribal || strategyProfile.wantsGoWide ? 24 : 18)
+    : 10;
 
   const byRole = {
     ramp: [],
@@ -1035,6 +1242,50 @@ function buildDeckFromScoredPool(
     usedNames.add(key);
   }
 
+  const currentCreatureCount = () => deck.filter((c) => c.type.includes("creature")).length;
+
+  if (currentCreatureCount() < minimumCreatureCount) {
+    const creatureFallbackPool = [];
+    const seenCreatures = new Set();
+
+    for (const entry of collectionData.originals) {
+      const normalizedName = entry.normalizedName;
+
+      if (seenCreatures.has(normalizedName)) continue;
+      seenCreatures.add(normalizedName);
+
+      if (normalizedName === normalizedCommander) continue;
+      if (usedNames.has(normalizedName)) continue;
+
+      const card = allOwnedCardData.get(normalizedName);
+      if (!card) continue;
+      if (!card.type.includes("creature")) continue;
+      if (!legalForCommander(card.colors, commanderColors)) continue;
+
+      creatureFallbackPool.push({
+        name: card.name,
+        role: detectRole(card),
+        score: scoreFallbackCard(card, commanderThemes, strategyProfile, commanderColors) + 10,
+        type: card.type,
+        cmc: card.cmc,
+        colors: card.colors
+      });
+    }
+
+    creatureFallbackPool.sort((a, b) => b.score - a.score);
+
+    for (const card of creatureFallbackPool) {
+      if (currentCreatureCount() >= minimumCreatureCount) break;
+      if (deck.length >= targetNonlandCount) break;
+
+      const key = normalizeCardName(card.name);
+      if (usedNames.has(key)) continue;
+
+      deck.push(card);
+      usedNames.add(key);
+    }
+  }
+
   if (deck.length < targetNonlandCount) {
     const fallbackPool = [];
     const seenFallback = new Set();
@@ -1056,7 +1307,7 @@ function buildDeckFromScoredPool(
       fallbackPool.push({
         name: card.name,
         role: detectRole(card),
-        score: scoreFallbackCard(card, commanderThemes),
+        score: scoreFallbackCard(card, commanderThemes, strategyProfile, commanderColors),
         type: card.type,
         cmc: card.cmc,
         colors: card.colors
@@ -1081,7 +1332,8 @@ function buildDeckFromScoredPool(
     collectionData,
     allOwnedCardData,
     commanderColors,
-    targetLandCount
+    targetLandCount,
+    strategyProfile
   );
 
   let remainingLandCount = targetLandCount - selectedNonbasicLands.length;
@@ -1153,12 +1405,14 @@ function displayDeckSummary(deck, commanderName, commanderColors) {
 
   const nonlands = deck.filter((c) => c.role !== "land").length;
   const lands = deck.filter((c) => c.role === "land").length;
+  const creatures = deck.filter((c) => c.type.includes("creature")).length;
   const colorText = commanderColors.length ? commanderColors.join("") : "Colorless";
 
   summary.textContent =
     `Commander: ${commanderName}
 Color Identity: ${colorText}
 Total Cards: ${deck.length}
+Creatures: ${creatures}
 Nonlands: ${nonlands}
 Lands: ${lands}`;
 }
@@ -1271,6 +1525,12 @@ async function generateDeck() {
     displayThemes(commanderThemes);
     logMessage(`Detected themes: ${commanderThemes.join(", ") || "none"}`);
 
+    const strategyProfile = getCommanderStrategyProfile(
+      commanderData.name,
+      commanderThemes,
+      commanderData.colors
+    );
+
     updateProgress(38, "Matching your collection...");
     const ownedCandidates = edhrecCards.filter((c) => hasOwnedCard(collection, c.name));
     logMessage(`${ownedCandidates.length} EDHREC cards overlap with your collection or basic lands.`);
@@ -1325,7 +1585,13 @@ async function generateDeck() {
       }
 
       const role = detectRole(card);
-      const score = scoreCard(card, edhrecCard, commanderThemes);
+      const score = scoreCard(
+        card,
+        edhrecCard,
+        commanderThemes,
+        strategyProfile,
+        commanderData.colors
+      );
 
       scoredNonlands.push({
         name: card.name,
@@ -1372,6 +1638,7 @@ async function generateDeck() {
     updateProgress(100, "Deck complete!", `${finalDeck.length} cards selected`);
     logMessage("Finished.");
   } catch (error) {
+    console.error(error);
     updateProgress(0, "Error");
     logMessage(`ERROR: ${error.message}`);
     alert(error.message);
