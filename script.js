@@ -21,6 +21,8 @@ let autocompleteTimer = null;
 let activeAutocompleteIndex = -1;
 let currentAutocompleteItems = [];
 let toastTimer = null;
+let currentBuildMode = "balanced";
+let currentRunContext = null;
 
 const BASIC_LANDS = [
   { name: "Plains", colorsProduced: ["W"] },
@@ -47,10 +49,6 @@ const TRIBAL_TYPES = [
   "wizard", "wolf", "zombie"
 ];
 
-/*
-  Maintained snapshot for Game Changers detection.
-  Update this array as the official list changes.
-*/
 const GAME_CHANGERS = new Set([
   "ad nauseam",
   "ancient tomb",
@@ -112,11 +110,21 @@ copyExportBtn.addEventListener("click", copyMoxfieldExport);
 commanderInput.addEventListener("input", onCommanderInput);
 commanderInput.addEventListener("keydown", onAutocompleteKeydown);
 
+document.querySelectorAll(".priority-btn").forEach((btn) => {
+  btn.addEventListener("click", () => regenerateWithMode(btn.dataset.mode));
+});
+
 document.addEventListener("click", (event) => {
   if (!autocompleteList.contains(event.target) && event.target !== commanderInput) {
     hideAutocomplete();
   }
 });
+
+function updatePriorityButtons() {
+  document.querySelectorAll(".priority-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.mode === currentBuildMode);
+  });
+}
 
 function updateProgress(percent, statusText, subStatus = "") {
   document.getElementById("progressBar").style.width = `${Math.max(0, Math.min(100, percent))}%`;
@@ -143,9 +151,7 @@ function showToast(message) {
   toast.textContent = message;
   toast.classList.remove("hidden");
   if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    toast.classList.add("hidden");
-  }, 1800);
+  toastTimer = setTimeout(() => toast.classList.add("hidden"), 1800);
 }
 
 function setGenerateEnabled(enabled) {
@@ -249,22 +255,18 @@ function onAutocompleteKeydown(event) {
 async function fetchCommanderAutocomplete(query) {
   const response = await fetch(`${SCRYFALL_AUTOCOMPLETE}${encodeURIComponent(query)}`);
   if (!response.ok) throw new Error("Autocomplete request failed.");
-
   const data = await response.json();
   return Array.isArray(data.data) ? data.data.slice(0, 12) : [];
 }
 
 async function filterCommanderAutocomplete(items) {
   if (!items.length) return [];
-
   const cardMap = await fetchCardDataBatchWithProgress(items);
   const legal = [];
 
   for (const name of items) {
     const card = cardMap.get(normalizeCardName(name));
-    if (card && canBeCommander(card)) {
-      legal.push(card.name);
-    }
+    if (card && canBeCommander(card)) legal.push(card.name);
   }
 
   return legal;
@@ -299,7 +301,6 @@ function renderAutocomplete(items) {
 function refreshActiveAutocompleteItem() {
   const items = autocompleteList.querySelectorAll(".autocomplete-item");
   items.forEach((el) => el.classList.remove("active"));
-
   if (activeAutocompleteIndex >= 0 && items[activeAutocompleteIndex]) {
     items[activeAutocompleteIndex].classList.add("active");
   }
@@ -336,9 +337,7 @@ async function parseCSV(file) {
         const text = event.target.result;
         const lines = text.split(/\r?\n/).filter(Boolean);
 
-        if (lines.length < 2) {
-          throw new Error("CSV file appears to be empty.");
-        }
+        if (lines.length < 2) throw new Error("CSV file appears to be empty.");
 
         const header = splitCsvLine(lines[0]).map((x) => x.trim().toLowerCase());
         const nameIndex = header.findIndex((h) => h === "name");
@@ -391,13 +390,11 @@ function toEdhrecSlug(name) {
 
 function pickCommanderImage(data) {
   if (data.image_uris?.normal) return data.image_uris.normal;
-
   if (Array.isArray(data.card_faces)) {
     for (const face of data.card_faces) {
       if (face.image_uris?.normal) return face.image_uris.normal;
     }
   }
-
   return "";
 }
 
@@ -428,7 +425,6 @@ function convertScryfallCard(data) {
 async function getCommander(name) {
   const response = await fetch(`${SCRYFALL_NAMED}${encodeURIComponent(name)}`);
   if (!response.ok) return null;
-
   const data = await response.json();
   return convertScryfallCard(data);
 }
@@ -448,7 +444,6 @@ async function getEDHREC(commanderName) {
     const cards = Array.isArray(section.cardviews) ? section.cardviews : [];
     for (const card of cards) {
       if (!card?.name) continue;
-
       const key = normalizeCardName(card.name);
       if (!deduped.has(key)) {
         deduped.set(key, {
@@ -502,9 +497,7 @@ async function fetchCardDataBatchWithProgress(cardNames, progressCallback) {
     }
 
     for (const requestedName of chunk) {
-      if (!cardCache.has(requestedName)) {
-        cardCache.set(requestedName, null);
-      }
+      if (!cardCache.has(requestedName)) cardCache.set(requestedName, null);
     }
 
     done += chunk.length;
@@ -753,6 +746,30 @@ function getCommanderStrategyProfile(commanderName, commanderThemes, commanderCo
   return profile;
 }
 
+function getModePreferences(mode, strategyProfile) {
+  return {
+    mode,
+    synergyBias:
+      mode === "more-synergistic" ? 1.4 :
+      mode === "more-tribal" ? 1.25 :
+      mode === "balanced" ? 1 :
+      mode === "more-casual" ? 0.9 :
+      1,
+    creatureBias:
+      mode === "more-creatures" ? 1.6 :
+      mode === "more-tribal" ? 1.35 :
+      strategyProfile.wantsCreatures ? 1.1 : 1,
+    casualBias: mode === "more-casual" ? 1.4 : 1,
+    manaBaseBias: mode === "stronger-mana-base" ? 1.35 : 1,
+    fewerStaplesBias: mode === "fewer-staples" ? 1.5 : 1,
+    tribalBias: mode === "more-tribal" ? 1.5 : 1,
+    minimumCreatureBonus:
+      mode === "more-creatures" ? 8 :
+      mode === "more-tribal" ? 6 :
+      0
+  };
+}
+
 function isCreatureCard(card) {
   return card.type.includes("creature");
 }
@@ -832,6 +849,25 @@ function isLowPriorityMonoColorRock(card, commanderColors, profile) {
   if (name === "idol of oblivion" && profile.wantsTokens) return false;
 
   return false;
+}
+
+function isGenericStaple(card) {
+  const staples = new Set([
+    "sol ring",
+    "arcane signet",
+    "command tower",
+    "swiftfoot boots",
+    "skullclamp",
+    "swords to plowshares",
+    "path to exile",
+    "cyclonic rift",
+    "rhystic study",
+    "smothering tithe",
+    "demonic tutor",
+    "vampiric tutor",
+    "teferi's protection"
+  ]);
+  return staples.has(normalizeCardName(card.name));
 }
 
 function detectRole(card) {
@@ -938,15 +974,13 @@ function detectCardTags(card) {
 
   for (const tribalType of TRIBAL_TYPES) {
     const pattern = new RegExp(`\\b${tribalType}\\b`);
-    if (pattern.test(combined)) {
-      tags.push(`${tribalType} tribal`);
-    }
+    if (pattern.test(combined)) tags.push(`${tribalType} tribal`);
   }
 
   return tags;
 }
 
-function scoreCard(card, edhrecCard, commanderThemes, strategyProfile, commanderColors) {
+function scoreCard(card, edhrecCard, commanderThemes, strategyProfile, commanderColors, modePrefs) {
   const synergyScore = Number(edhrecCard.synergy || 0) * 6;
   const popularityScore = Math.min(Number(edhrecCard.decks || 0) / 1200, 18);
 
@@ -970,14 +1004,14 @@ function scoreCard(card, edhrecCard, commanderThemes, strategyProfile, commander
     if (commanderThemes.includes(tag)) themeBonus += 5;
   }
 
-  if (strategyProfile.wantsCreatures && isCreatureCard(card)) themeBonus += 5;
-  if (strategyProfile.wantsTokens && isTokenMaker(card)) themeBonus += 7;
-  if (strategyProfile.wantsSacrifice && isSacrificeCard(card)) themeBonus += 6;
-  if (strategyProfile.wantsGoWide && isCreatureCard(card)) themeBonus += 3;
+  if (strategyProfile.wantsCreatures && isCreatureCard(card)) themeBonus += 5 * modePrefs.creatureBias;
+  if (strategyProfile.wantsTokens && isTokenMaker(card)) themeBonus += 7 * modePrefs.synergyBias;
+  if (strategyProfile.wantsSacrifice && isSacrificeCard(card)) themeBonus += 6 * modePrefs.synergyBias;
+  if (strategyProfile.wantsGoWide && isCreatureCard(card)) themeBonus += 3 * modePrefs.creatureBias;
 
   if (strategyProfile.wantsTribal) {
     for (const tribe of strategyProfile.tribalTypes) {
-      if (hasTribalType(card, tribe)) themeBonus += 10;
+      if (hasTribalType(card, tribe)) themeBonus += 10 * modePrefs.tribalBias;
     }
   }
 
@@ -987,11 +1021,13 @@ function scoreCard(card, edhrecCard, commanderThemes, strategyProfile, commander
 
   let penalty = 0;
   if (isLowPriorityMonoColorRock(card, commanderColors, strategyProfile)) penalty += 8;
+  if (modePrefs.casualBias > 1 && GAME_CHANGERS.has(normalizeCardName(card.name))) penalty += 10 * modePrefs.casualBias;
+  if (modePrefs.fewerStaplesBias > 1 && isGenericStaple(card)) penalty += 6 * modePrefs.fewerStaplesBias;
 
-  return synergyScore + popularityScore + roleBonus + curveBonus + themeBonus - penalty;
+  return synergyScore * modePrefs.synergyBias + popularityScore + roleBonus + curveBonus + themeBonus - penalty;
 }
 
-function scoreFallbackCard(card, commanderThemes, strategyProfile, commanderColors) {
+function scoreFallbackCard(card, commanderThemes, strategyProfile, commanderColors, modePrefs) {
   let score = 5;
 
   const role = detectRole(card);
@@ -1006,21 +1042,23 @@ function scoreFallbackCard(card, commanderThemes, strategyProfile, commanderColo
 
   const tags = detectCardTags(card);
   for (const tag of tags) {
-    if (commanderThemes.includes(tag)) score += 4;
+    if (commanderThemes.includes(tag)) score += 4 * modePrefs.synergyBias;
   }
 
-  if (strategyProfile.wantsCreatures && isCreatureCard(card)) score += 6;
-  if (strategyProfile.wantsTokens && isTokenMaker(card)) score += 8;
-  if (strategyProfile.wantsSacrifice && isSacrificeCard(card)) score += 7;
-  if (strategyProfile.wantsGoWide && isCreatureCard(card)) score += 3;
+  if (strategyProfile.wantsCreatures && isCreatureCard(card)) score += 6 * modePrefs.creatureBias;
+  if (strategyProfile.wantsTokens && isTokenMaker(card)) score += 8 * modePrefs.synergyBias;
+  if (strategyProfile.wantsSacrifice && isSacrificeCard(card)) score += 7 * modePrefs.synergyBias;
+  if (strategyProfile.wantsGoWide && isCreatureCard(card)) score += 3 * modePrefs.creatureBias;
 
   if (strategyProfile.wantsTribal) {
     for (const tribe of strategyProfile.tribalTypes) {
-      if (hasTribalType(card, tribe)) score += 12;
+      if (hasTribalType(card, tribe)) score += 12 * modePrefs.tribalBias;
     }
   }
 
   if (isLowPriorityMonoColorRock(card, commanderColors, strategyProfile)) score -= 8;
+  if (modePrefs.casualBias > 1 && GAME_CHANGERS.has(normalizeCardName(card.name))) score -= 10 * modePrefs.casualBias;
+  if (modePrefs.fewerStaplesBias > 1 && isGenericStaple(card)) score -= 6 * modePrefs.fewerStaplesBias;
 
   return score;
 }
@@ -1039,7 +1077,7 @@ function recommendLandCount(commanderColors) {
   return 38;
 }
 
-function evaluateNonbasicLand(card, commanderColors, strategyProfile) {
+function evaluateNonbasicLand(card, commanderColors, strategyProfile, modePrefs) {
   if (!card.type.includes("land")) return null;
   if (isBasicLand(card.name)) return null;
 
@@ -1077,17 +1115,20 @@ function evaluateNonbasicLand(card, commanderColors, strategyProfile) {
     if (isLowPriorityMonoColorFixer(card, commanderColors)) score -= 12;
   }
 
+  score *= modePrefs.manaBaseBias;
+
   return {
     name: card.name,
     role: "land",
     score,
     type: card.type,
     cmc: 0,
-    colors: produced
+    colors: produced,
+    source: "nonbasic-land"
   };
 }
 
-function buildNonbasicManaBase(collectionData, allOwnedCardData, commanderColors, targetLandCount, strategyProfile) {
+function buildNonbasicManaBase(collectionData, allOwnedCardData, commanderColors, targetLandCount, strategyProfile, modePrefs) {
   const landPool = [];
   const seen = new Set();
 
@@ -1102,7 +1143,7 @@ function buildNonbasicManaBase(collectionData, allOwnedCardData, commanderColors
     if (isBasicLand(card.name)) continue;
     if (!legalForCommander(card.colors, commanderColors)) continue;
 
-    const landCandidate = evaluateNonbasicLand(card, commanderColors, strategyProfile);
+    const landCandidate = evaluateNonbasicLand(card, commanderColors, strategyProfile, modePrefs);
     if (!landCandidate) continue;
     landPool.push(landCandidate);
   }
@@ -1119,9 +1160,9 @@ function buildNonbasicManaBase(collectionData, allOwnedCardData, commanderColors
 
   const maxNonbasicCount =
     commanderColors.length === 1 ? Math.min(6, targetLandCount) :
-    commanderColors.length === 2 ? Math.min(12, targetLandCount) :
-    commanderColors.length === 3 ? Math.min(16, targetLandCount) :
-    Math.min(20, targetLandCount);
+    commanderColors.length === 2 ? Math.min(modePrefs.manaBaseBias > 1 ? 15 : 12, targetLandCount) :
+    commanderColors.length === 3 ? Math.min(modePrefs.manaBaseBias > 1 ? 18 : 16, targetLandCount) :
+    Math.min(modePrefs.manaBaseBias > 1 ? 22 : 20, targetLandCount);
 
   return filtered.slice(0, maxNonbasicCount);
 }
@@ -1136,7 +1177,8 @@ function buildBasicManaBase(commanderColors, landCountNeeded, selectedNonbasics 
       score: 0,
       type: "basic land",
       cmc: 0,
-      colors: []
+      colors: [],
+      source: "basic-land"
     }));
   }
 
@@ -1164,7 +1206,8 @@ function buildBasicManaBase(commanderColors, landCountNeeded, selectedNonbasics 
       score: 0,
       type: "basic land",
       cmc: 0,
-      colors: [color]
+      colors: [color],
+      source: "basic-land"
     });
   }
 
@@ -1177,7 +1220,8 @@ function buildDeckFromScoredPool(
   collectionData,
   allOwnedCardData,
   commanderThemes,
-  commanderName
+  commanderName,
+  modePrefs
 ) {
   const deck = [];
   const usedNames = new Set();
@@ -1195,8 +1239,8 @@ function buildDeckFromScoredPool(
   };
 
   const minimumCreatureCount = strategyProfile.wantsCreatures
-    ? (strategyProfile.wantsTribal || strategyProfile.wantsGoWide ? 24 : 18)
-    : 10;
+    ? (strategyProfile.wantsTribal || strategyProfile.wantsGoWide ? 24 : 18) + modePrefs.minimumCreatureBonus
+    : 10 + Math.floor(modePrefs.minimumCreatureBonus / 2);
 
   const byRole = {
     ramp: [],
@@ -1224,7 +1268,7 @@ function buildDeckFromScoredPool(
       const key = normalizeCardName(card.name);
       if (usedNames.has(key) || key === normalizedCommander) continue;
 
-      deck.push(card);
+      deck.push({ ...card, source: "edhrec" });
       usedNames.add(key);
       addedForRole += 1;
 
@@ -1246,7 +1290,7 @@ function buildDeckFromScoredPool(
     const key = normalizeCardName(card.name);
     if (usedNames.has(key) || key === normalizedCommander) continue;
 
-    deck.push(card);
+    deck.push({ ...card, source: "edhrec" });
     usedNames.add(key);
   }
 
@@ -1271,7 +1315,7 @@ function buildDeckFromScoredPool(
       creatureFallbackPool.push({
         name: card.name,
         role: detectRole(card),
-        score: scoreFallbackCard(card, commanderThemes, strategyProfile, commanderColors) + 10,
+        score: scoreFallbackCard(card, commanderThemes, strategyProfile, commanderColors, modePrefs) + 10,
         type: card.type,
         cmc: card.cmc,
         colors: card.colors
@@ -1287,7 +1331,7 @@ function buildDeckFromScoredPool(
       const key = normalizeCardName(card.name);
       if (usedNames.has(key)) continue;
 
-      deck.push(card);
+      deck.push({ ...card, source: "fallback-creature" });
       usedNames.add(key);
     }
   }
@@ -1311,7 +1355,7 @@ function buildDeckFromScoredPool(
       fallbackPool.push({
         name: card.name,
         role: detectRole(card),
-        score: scoreFallbackCard(card, commanderThemes, strategyProfile, commanderColors),
+        score: scoreFallbackCard(card, commanderThemes, strategyProfile, commanderColors, modePrefs),
         type: card.type,
         cmc: card.cmc,
         colors: card.colors
@@ -1326,7 +1370,7 @@ function buildDeckFromScoredPool(
       const key = normalizeCardName(card.name);
       if (usedNames.has(key) || key === normalizedCommander) continue;
 
-      deck.push(card);
+      deck.push({ ...card, source: "fallback" });
       usedNames.add(key);
     }
   }
@@ -1336,7 +1380,8 @@ function buildDeckFromScoredPool(
     allOwnedCardData,
     commanderColors,
     targetLandCount,
-    strategyProfile
+    strategyProfile,
+    modePrefs
   );
 
   let remainingLandCount = targetLandCount - selectedNonbasicLands.length;
@@ -1345,7 +1390,7 @@ function buildDeckFromScoredPool(
   const basicLands = buildBasicManaBase(
     commanderColors,
     remainingLandCount,
-    selectedNonbasics = selectedNonbasicLands
+    selectedNonbasicLands
   );
 
   let finalDeck = [...deck, ...selectedNonbasicLands, ...basicLands];
@@ -1372,31 +1417,93 @@ function mergeDeckCounts(deck) {
   for (const card of deck) {
     const key = normalizeCardName(card.name);
     if (!map.has(key)) {
-      map.set(key, { name: card.name, count: 1 });
+      map.set(key, {
+        name: card.name,
+        count: 1,
+        type: card.type,
+        role: card.role,
+        source: card.source,
+        reasons: card.reasons || []
+      });
     } else {
-      map.get(key).count += 1;
+      const existing = map.get(key);
+      existing.count += 1;
+      existing.reasons = Array.from(new Set([...(existing.reasons || []), ...(card.reasons || [])]));
     }
   }
 
   return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function displayThemes(themes) {
-  const ul = document.getElementById("themes");
-  ul.innerHTML = "";
+function getCardSection(cardType) {
+  const type = String(cardType || "").toLowerCase();
+  if (type.includes("creature")) return "Creatures";
+  if (type.includes("artifact")) return "Artifacts";
+  if (type.includes("enchantment")) return "Enchantments";
+  if (type.includes("planeswalker")) return "Planeswalkers";
+  if (type.includes("instant")) return "Instants";
+  if (type.includes("sorcery")) return "Sorceries";
+  if (type.includes("land")) return "Lands";
+  return "Other";
+}
+
+function generateCardReasons(card, commanderThemes, strategyProfile, commanderColors) {
+  const reasons = [];
+  const tags = detectCardTags(card);
+  const role = detectRole(card);
+
+  if (role === "ramp") reasons.push("ramp");
+  if (role === "draw") reasons.push("draw");
+  if (role === "removal") reasons.push("removal");
+  if (role === "wipe") reasons.push("wipe");
+  if (isTokenMaker(card)) reasons.push("token maker");
+  if (isSacrificeCard(card)) reasons.push("sac outlet");
+  if (GAME_CHANGERS.has(normalizeCardName(card.name))) reasons.push("game changer");
+
+  for (const theme of commanderThemes) {
+    if (tags.includes(theme)) reasons.push(theme);
+  }
+
+  if (strategyProfile.wantsTribal) {
+    for (const tribe of strategyProfile.tribalTypes) {
+      if (hasTribalType(card, tribe)) reasons.push(`${tribe} tribal`);
+    }
+  }
+
+  if (card.role === "land") {
+    if (card.source === "basic-land") reasons.push("basic fixing");
+    if (card.source === "nonbasic-land") reasons.push("mana land");
+  }
+
+  if (card.source === "edhrec") reasons.push("edhrec match");
+  if (card.source === "fallback") reasons.push("collection fallback");
+  if (card.source === "fallback-creature") reasons.push("creature fallback");
+
+  return Array.from(new Set(reasons)).slice(0, 5);
+}
+
+function displayThemeChips(themes) {
+  const wrap = document.getElementById("themeChips");
+  wrap.innerHTML = "";
 
   if (!themes.length) {
-    const li = document.createElement("li");
-    li.textContent = "No clear themes detected.";
-    ul.appendChild(li);
+    const chip = document.createElement("div");
+    chip.className = "theme-chip";
+    chip.textContent = "No clear themes";
+    wrap.appendChild(chip);
     return;
   }
 
   themes.forEach((theme) => {
-    const li = document.createElement("li");
-    li.textContent = theme;
-    ul.appendChild(li);
+    const chip = document.createElement("div");
+    chip.className = "theme-chip";
+    chip.textContent = theme;
+    wrap.appendChild(chip);
   });
+}
+
+function displayThemes(themes) {
+  displayThemeChips(themes);
 }
 
 function displayDeckSummary(deck, commanderName, commanderColors) {
@@ -1460,58 +1567,25 @@ function estimateDeckBracket(deck, commanderThemes, commanderColors, commanderNa
       : 0;
 
   const fastManaCards = [
-    "sol ring",
-    "mana crypt",
-    "chrome mox",
-    "mox diamond",
-    "jeweled lotus",
-    "mana vault",
-    "grim monolith",
-    "lotus petal"
+    "sol ring", "mana crypt", "chrome mox", "mox diamond", "jeweled lotus", "mana vault", "grim monolith", "lotus petal"
   ];
 
   const tutorCards = [
-    "demonic tutor",
-    "vampiric tutor",
-    "imperial seal",
-    "worldly tutor",
-    "enlightened tutor",
-    "mystical tutor",
-    "gamble",
-    "diabolic intent",
-    "eladamri's call",
-    "green sun's zenith",
-    "finale of devastation",
-    "crop rotation"
+    "demonic tutor", "vampiric tutor", "imperial seal", "worldly tutor", "enlightened tutor",
+    "mystical tutor", "gamble", "diabolic intent", "eladamri's call", "green sun's zenith",
+    "finale of devastation", "crop rotation"
   ];
 
   const extraTurnCards = [
-    "time warp",
-    "temporal manipulation",
-    "capture of jingzhou",
-    "nexus of fate",
-    "time stretch",
-    "expropriate"
+    "time warp", "temporal manipulation", "capture of jingzhou", "nexus of fate", "time stretch", "expropriate"
   ];
 
   const massLandDenialCards = [
-    "armageddon",
-    "ravages of war",
-    "ruination",
-    "winter orb",
-    "blood moon",
-    "magus of the moon",
-    "sunder"
+    "armageddon", "ravages of war", "ruination", "winter orb", "blood moon", "magus of the moon", "sunder"
   ];
 
   const compactComboCards = [
-    "thassa's oracle",
-    "underworld breach",
-    "ad nauseam",
-    "protean hulk",
-    "bolas's citadel",
-    "dockside extortionist",
-    "food chain"
+    "thassa's oracle", "underworld breach", "ad nauseam", "protean hulk", "bolas's citadel", "dockside extortionist", "food chain"
   ];
 
   const fastManaCount = names.filter((n) => fastManaCards.includes(n)).length;
@@ -1523,7 +1597,6 @@ function estimateDeckBracket(deck, commanderThemes, commanderColors, commanderNa
   const gameChangerCount = gameChangers.length;
 
   let score = 0;
-
   score += rampCount * 0.25;
   score += drawCount * 0.2;
   score += removalCount * 0.15;
@@ -1551,21 +1624,16 @@ function estimateDeckBracket(deck, commanderThemes, commanderColors, commanderNa
   if (lands >= 37) score -= 0.2;
 
   let bracket = 2;
-
   if (score < 1.5) bracket = 1;
   else if (score < 4.5) bracket = 2;
   else if (score < 8.5) bracket = 3;
   else if (score < 13) bracket = 4;
   else bracket = 5;
 
-  // Apply official Game Changer floor logic.
-  if (gameChangerCount === 0 && bracket < 2) bracket = 1;
-  if (gameChangerCount === 0 && bracket === 1) bracket = 1;
   if (gameChangerCount > 0 && bracket < 3) bracket = 3;
   if (gameChangerCount > 3 && bracket < 4) bracket = 4;
 
   const reasons = [];
-
   if (gameChangerCount) reasons.push(`game changers: ${gameChangerCount}`);
   if (fastManaCount) reasons.push(`fast mana: ${fastManaCount}`);
   if (tutorCount) reasons.push(`tutors: ${tutorCount}`);
@@ -1586,10 +1654,17 @@ function estimateDeckBracket(deck, commanderThemes, commanderColors, commanderNa
 
 function displayDeckBracket(bracketInfo) {
   const el = document.getElementById("deckBracket");
-  el.textContent =
-    `Estimated Power: ${bracketInfo.label}\n` +
+  const badgeClass =
+    bracketInfo.bracket === 1 ? "badge-b1" :
+    bracketInfo.bracket === 2 ? "badge-b2" :
+    bracketInfo.bracket === 3 ? "badge-b3" :
+    bracketInfo.bracket === 4 ? "badge-b4" :
+    "badge-b5";
+
+  el.innerHTML =
+    `Estimated Power: <span class="badge ${badgeClass}">${escapeHtml(bracketInfo.label)}</span>\n` +
     `Heuristic score: ${bracketInfo.score}\n` +
-    `Signals: ${bracketInfo.reasons.join(", ")}`;
+    `Signals: ${escapeHtml(bracketInfo.reasons.join(", "))}`;
 }
 
 function displayGameChangers(bracketInfo) {
@@ -1602,6 +1677,75 @@ function displayGameChangers(bracketInfo) {
   el.textContent =
     `Game Changers detected (${bracketInfo.gameChangers.length}): ` +
     bracketInfo.gameChangers.join(", ");
+}
+
+function displayBuildBreakdown(deck) {
+  const el = document.getElementById("buildBreakdown");
+
+  const edhrecCount = deck.filter((c) => c.source === "edhrec").length;
+  const fallbackCreatureCount = deck.filter((c) => c.source === "fallback-creature").length;
+  const fallbackCount = deck.filter((c) => c.source === "fallback").length;
+  const nonbasicCount = deck.filter((c) => c.source === "nonbasic-land").length;
+  const basicCount = deck.filter((c) => c.source === "basic-land").length;
+
+  el.textContent =
+    `Build Breakdown
+EDHREC matches used: ${edhrecCount}
+Fallback creatures used: ${fallbackCreatureCount}
+Other fallback cards used: ${fallbackCount}
+Nonbasic lands used: ${nonbasicCount}
+Basic lands used: ${basicCount}`;
+}
+
+function generateWarnings(deck, commanderThemes, bracketInfo) {
+  const warnings = [];
+  const creatures = deck.filter((c) => c.type.includes("creature")).length;
+  const ramp = deck.filter((c) => c.role === "ramp").length;
+  const draw = deck.filter((c) => c.role === "draw").length;
+  const removal = deck.filter((c) => c.role === "removal").length;
+  const wipes = deck.filter((c) => c.role === "wipe").length;
+  const basics = deck.filter((c) => c.source === "basic-land").length;
+  const nonbasics = deck.filter((c) => c.source === "nonbasic-land").length;
+  const fallbackCards = deck.filter((c) => c.source === "fallback" || c.source === "fallback-creature").length;
+
+  if (commanderThemes.some((t) => t.endsWith(" tribal")) && creatures < 22) {
+    warnings.push("Low creature count for a tribal deck.");
+  }
+  if (commanderThemes.includes("goWide") && creatures < 20) {
+    warnings.push("Go-wide strategy may be light on creatures or token bodies.");
+  }
+  if (ramp < 8) warnings.push("Ramp count is on the low side.");
+  if (draw < 8) warnings.push("Card draw count is on the low side.");
+  if (removal < 6) warnings.push("Interaction count may be low.");
+  if (wipes < 2 && bracketInfo.bracket >= 3) warnings.push("Only a small number of board wipes found.");
+  if (nonbasics > basics * 1.5 && basics < 10) warnings.push("Mana base may still be a bit too greedy on nonbasics.");
+  if (fallbackCards >= 18) warnings.push("A large portion of the deck came from fallback collection logic, not direct commander overlap.");
+  if (bracketInfo.gameChangers.length >= 4) warnings.push("This build contains several Game Changers and may read stronger than expected at casual tables.");
+
+  return warnings;
+}
+
+function displayWarnings(warnings) {
+  const el = document.getElementById("warningsPanel");
+  el.innerHTML = "";
+
+  if (!warnings.length) {
+    el.textContent = "Warnings / Confidence Notes\nNo major structural issues detected.";
+    return;
+  }
+
+  const title = document.createElement("div");
+  title.textContent = "Warnings / Confidence Notes";
+  title.style.fontWeight = "700";
+  title.style.marginBottom = "8px";
+  el.appendChild(title);
+
+  warnings.forEach((warning) => {
+    const line = document.createElement("div");
+    line.className = "warning-line";
+    line.textContent = `• ${warning}`;
+    el.appendChild(line);
+  });
 }
 
 function renderColorPips(colors) {
@@ -1663,36 +1807,75 @@ function scryfallCardUrl(cardName) {
 function generateMoxfieldExport(deck, commanderName) {
   const merged = mergeDeckCounts(deck);
   const lines = [`1 ${commanderName}`];
-
   for (const item of merged) {
     lines.push(`${item.count} ${item.name}`);
   }
-
   return lines.join("\n");
 }
 
-function displayExportPreview(deck, commanderName) {
+function displayExportPreview(deck, commanderName, commanderThemes, strategyProfile, commanderColors) {
   const preview = document.getElementById("exportPreview");
   preview.innerHTML = "";
 
-  const merged = mergeDeckCounts(deck);
-
+  const commanderSection = document.createElement("div");
+  commanderSection.className = "preview-section";
+  commanderSection.innerHTML = `<div class="preview-section-title">Commander</div>`;
   const commanderLine = document.createElement("div");
   commanderLine.className = "preview-line";
   commanderLine.innerHTML = `<span class="preview-qty">1</span> <a href="${scryfallCardUrl(commanderName)}" target="_blank" rel="noopener noreferrer">${escapeHtml(commanderName)}</a>`;
-  preview.appendChild(commanderLine);
+  commanderSection.appendChild(commanderLine);
+  preview.appendChild(commanderSection);
+
+  const merged = mergeDeckCounts(deck);
+  const sections = new Map();
 
   for (const item of merged) {
-    const line = document.createElement("div");
-    line.className = "preview-line";
-    line.innerHTML = `<span class="preview-qty">${item.count}</span> <a href="${scryfallCardUrl(item.name)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.name)}</a>`;
-    preview.appendChild(line);
+    const section = getCardSection(item.type);
+    if (!sections.has(section)) sections.set(section, []);
+    sections.get(section).push(item);
+  }
+
+  const sectionOrder = ["Creatures", "Artifacts", "Enchantments", "Planeswalkers", "Instants", "Sorceries", "Lands", "Other"];
+
+  for (const sectionName of sectionOrder) {
+    const items = sections.get(sectionName);
+    if (!items || !items.length) continue;
+
+    const section = document.createElement("div");
+    section.className = "preview-section";
+    section.innerHTML = `<div class="preview-section-title">${escapeHtml(sectionName)}</div>`;
+
+    items.forEach((item) => {
+      const line = document.createElement("div");
+      line.className = "preview-line";
+      line.innerHTML = `<span class="preview-qty">${item.count}</span> <a href="${scryfallCardUrl(item.name)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.name)}</a>`;
+      section.appendChild(line);
+
+      const sourceCard = deck.find((c) => normalizeCardName(c.name) === normalizeCardName(item.name));
+      const reasons = sourceCard
+        ? generateCardReasons(sourceCard, commanderThemes, strategyProfile, commanderColors)
+        : (item.reasons || []);
+
+      if (reasons.length) {
+        const badges = document.createElement("div");
+        badges.className = "reason-badges";
+        reasons.forEach((reason) => {
+          const badge = document.createElement("span");
+          badge.className = "reason-badge";
+          badge.textContent = reason;
+          badges.appendChild(badge);
+        });
+        section.appendChild(badges);
+      }
+    });
+
+    preview.appendChild(section);
   }
 }
 
-function displayMoxfieldExport(deck, commanderName) {
+function displayMoxfieldExport(deck, commanderName, commanderThemes, strategyProfile, commanderColors) {
   document.getElementById("moxfieldExport").value = generateMoxfieldExport(deck, commanderName);
-  displayExportPreview(deck, commanderName);
+  displayExportPreview(deck, commanderName, commanderThemes, strategyProfile, commanderColors);
 }
 
 function escapeHtml(text) {
@@ -1729,6 +1912,8 @@ async function generateDeck() {
   document.getElementById("deckSummary").textContent = "";
   document.getElementById("deckBracket").textContent = "";
   document.getElementById("deckGameChangers").textContent = "";
+  document.getElementById("buildBreakdown").textContent = "";
+  document.getElementById("warningsPanel").textContent = "";
   document.getElementById("moxfieldExport").value = "";
   document.getElementById("exportPreview").innerHTML = "";
 
@@ -1738,6 +1923,7 @@ async function generateDeck() {
     return;
   }
 
+  document.getElementById("emptyState").classList.add("hidden");
   setGenerateEnabled(false);
 
   try {
@@ -1760,7 +1946,6 @@ async function generateDeck() {
     logMessage("Loading commander recommendations from EDHREC.");
     const edhrecCards = await getEDHREC(commanderData.name);
     if (!edhrecCards.length) throw new Error("No EDHREC data returned for this commander.");
-
     logMessage(`EDHREC returned ${edhrecCards.length} candidate cards.`);
 
     updateProgress(30, "Fetching collection metadata for theme discovery...");
@@ -1784,12 +1969,6 @@ async function generateDeck() {
     displayThemes(commanderThemes);
     logMessage(`Detected themes: ${commanderThemes.join(", ") || "none"}`);
 
-    const strategyProfile = getCommanderStrategyProfile(
-      commanderData.name,
-      commanderThemes,
-      commanderData.colors
-    );
-
     updateProgress(58, "Matching your collection...");
     const ownedCandidates = edhrecCards.filter((c) => hasOwnedCard(collection, c.name));
     logMessage(`${ownedCandidates.length} EDHREC cards overlap with your collection or basic lands.`);
@@ -1805,84 +1984,17 @@ async function generateDeck() {
 
     logMessage(`Received metadata for ${ownedCardData.size} owned candidate cards.`);
 
-    updateProgress(78, "Checking legality and scoring cards...");
-    const scoredNonlands = [];
-    let processed = 0;
-    const totalToScore = ownedCandidates.length;
-
-    for (const edhrecCard of ownedCandidates) {
-      processed += 1;
-      const normalizedName = normalizeCardName(edhrecCard.name);
-      const card = ownedCardData.get(normalizedName);
-
-      if (!card || card.type.includes("land") || !legalForCommander(card.colors, commanderData.colors)) {
-        maybeUpdateScoringProgress(processed, totalToScore);
-        continue;
-      }
-
-      const role = detectRole(card);
-      const score = scoreCard(
-        card,
-        edhrecCard,
-        commanderThemes,
-        strategyProfile,
-        commanderData.colors
-      );
-
-      scoredNonlands.push({
-        name: card.name,
-        role,
-        score,
-        type: card.type,
-        cmc: card.cmc,
-        colors: card.colors
-      });
-
-      maybeUpdateScoringProgress(processed, totalToScore);
-    }
-
-    function maybeUpdateScoringProgress(done, total) {
-      if (done % 20 === 0 || done === total) {
-        updateProgress(
-          78 + Math.floor((done / Math.max(total, 1)) * 8),
-          "Checking legality and scoring cards...",
-          `Processed ${done} / ${total}`
-        );
-      }
-    }
-
-    logMessage(`After legality checks, ${scoredNonlands.length} nonland cards remain in the EDHREC candidate pool.`);
-
-    updateProgress(90, "Building deck structure and mana base...");
-    logMessage("Selecting EDHREC matches, backfilling from the rest of your collection, then filling remaining slots with lands.");
-    const finalDeck = buildDeckFromScoredPool(
-      scoredNonlands,
-      commanderData.colors,
+    currentRunContext = {
+      commanderData,
       collection,
+      edhrecCards,
+      ownedCardData,
       allOwnedCardData,
-      commanderThemes,
-      commanderData.name
-    );
+      commanderThemes
+    };
 
-    logMessage(`Built final deck with ${finalDeck.length} cards.`);
-    logMessage(`Final deck breakdown: ${finalDeck.filter(c => c.role !== "land").length} nonlands, ${finalDeck.filter(c => c.role === "land").length} lands.`);
-
-    updateProgress(97, "Rendering results...");
-    displayDeckSummary(finalDeck, commanderData.name, commanderData.colors);
-    displayMoxfieldExport(finalDeck, commanderData.name);
-
-    const bracketInfo = estimateDeckBracket(
-      finalDeck,
-      commanderThemes,
-      commanderData.colors,
-      commanderData.name
-    );
-    displayDeckBracket(bracketInfo);
-    displayGameChangers(bracketInfo);
-    logMessage(`Estimated ${bracketInfo.label} (score ${bracketInfo.score}).`);
-
-    updateProgress(100, "Deck complete!", `${finalDeck.length} cards selected`);
-    logMessage("Finished.");
+    await performBuildFromContext();
+    document.getElementById("postBuildControls").classList.remove("hidden");
   } catch (error) {
     console.error(error);
     updateProgress(0, "Error");
@@ -1891,4 +2003,127 @@ async function generateDeck() {
   } finally {
     setGenerateEnabled(true);
   }
+}
+
+async function regenerateWithMode(mode) {
+  if (!currentRunContext) return;
+  currentBuildMode = mode;
+  updatePriorityButtons();
+  setGenerateEnabled(false);
+  try {
+    logMessage(`Regenerating with priority mode: ${mode}.`);
+    updateProgress(90, "Regenerating deck...", mode);
+    await performBuildFromContext();
+    updateProgress(100, "Deck complete!", `${currentBuildMode}`);
+  } catch (error) {
+    console.error(error);
+    showToast(error.message);
+    logMessage(`ERROR: ${error.message}`);
+  } finally {
+    setGenerateEnabled(true);
+  }
+}
+
+async function performBuildFromContext() {
+  const {
+    commanderData,
+    collection,
+    edhrecCards,
+    ownedCardData,
+    allOwnedCardData,
+    commanderThemes
+  } = currentRunContext;
+
+  const strategyProfile = getCommanderStrategyProfile(
+    commanderData.name,
+    commanderThemes,
+    commanderData.colors
+  );
+
+  const modePrefs = getModePreferences(currentBuildMode, strategyProfile);
+
+  updateProgress(78, "Checking legality and scoring cards...");
+  const scoredNonlands = [];
+  let processed = 0;
+  const ownedCandidates = edhrecCards.filter((c) => hasOwnedCard(collection, c.name));
+  const totalToScore = ownedCandidates.length;
+
+  for (const edhrecCard of ownedCandidates) {
+    processed += 1;
+    const normalizedName = normalizeCardName(edhrecCard.name);
+    const card = ownedCardData.get(normalizedName);
+
+    if (!card || card.type.includes("land") || !legalForCommander(card.colors, commanderData.colors)) {
+      maybeUpdateScoringProgress(processed, totalToScore);
+      continue;
+    }
+
+    const role = detectRole(card);
+    const score = scoreCard(
+      card,
+      edhrecCard,
+      commanderThemes,
+      strategyProfile,
+      commanderData.colors,
+      modePrefs
+    );
+
+    scoredNonlands.push({
+      name: card.name,
+      role,
+      score,
+      type: card.type,
+      cmc: card.cmc,
+      colors: card.colors
+    });
+
+    maybeUpdateScoringProgress(processed, totalToScore);
+  }
+
+  function maybeUpdateScoringProgress(done, total) {
+    if (done % 20 === 0 || done === total) {
+      updateProgress(
+        78 + Math.floor((done / Math.max(total, 1)) * 8),
+        "Checking legality and scoring cards...",
+        `Processed ${done} / ${total}`
+      );
+    }
+  }
+
+  logMessage(`After legality checks, ${scoredNonlands.length} nonland cards remain in the EDHREC candidate pool.`);
+
+  updateProgress(90, "Building deck structure and mana base...");
+  const finalDeck = buildDeckFromScoredPool(
+    scoredNonlands,
+    commanderData.colors,
+    collection,
+    allOwnedCardData,
+    commanderThemes,
+    commanderData.name,
+    modePrefs
+  );
+
+  logMessage(`Built final deck with ${finalDeck.length} cards.`);
+  logMessage(`Final deck breakdown: ${finalDeck.filter(c => c.role !== "land").length} nonlands, ${finalDeck.filter(c => c.role === "land").length} lands.`);
+
+  const bracketInfo = estimateDeckBracket(
+    finalDeck,
+    commanderThemes,
+    commanderData.colors,
+    commanderData.name
+  );
+
+  const warnings = generateWarnings(finalDeck, commanderThemes, bracketInfo);
+
+  updateProgress(97, "Rendering results...");
+  displayDeckSummary(finalDeck, commanderData.name, commanderData.colors);
+  displayDeckBracket(bracketInfo);
+  displayGameChangers(bracketInfo);
+  displayBuildBreakdown(finalDeck);
+  displayWarnings(warnings);
+  displayMoxfieldExport(finalDeck, commanderData.name, commanderThemes, strategyProfile, commanderData.colors);
+
+  logMessage(`Estimated ${bracketInfo.label} (score ${bracketInfo.score}).`);
+  updateProgress(100, "Deck complete!", `${finalDeck.length} cards selected`);
+  logMessage("Finished.");
 }
