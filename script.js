@@ -1,320 +1,967 @@
-const SCRYFALL = "https://api.scryfall.com/cards/named?exact=";
-const EDHREC = "https://json.edhrec.com/pages/commanders/";
+const SCRYFALL_NAMED = "https://api.scryfall.com/cards/named?exact=";
+const SCRYFALL_AUTOCOMPLETE = "https://api.scryfall.com/cards/autocomplete?q=";
+const SCRYFALL_COLLECTION = "https://api.scryfall.com/cards/collection";
+const EDHREC_BASE = "https://json.edhrec.com/pages/commanders/";
 
+const commanderInput = document.getElementById("commanderInput");
+const autocompleteList = document.getElementById("autocompleteList");
+const generateBtn = document.getElementById("generateBtn");
 
-function updateProgress(percent, text){
+const cardCache = new Map();
+let autocompleteTimer = null;
+let activeAutocompleteIndex = -1;
+let currentAutocompleteItems = [];
 
-    document.getElementById("progressBar").style.width = percent + "%";
-    document.getElementById("statusText").innerText = text;
+const BASIC_LANDS = [
+  { name: "Plains", colorsProduced: ["W"] },
+  { name: "Island", colorsProduced: ["U"] },
+  { name: "Swamp", colorsProduced: ["B"] },
+  { name: "Mountain", colorsProduced: ["R"] },
+  { name: "Forest", colorsProduced: ["G"] },
+  { name: "Wastes", colorsProduced: [] }
+];
 
+const COLOR_TO_BASIC = {
+  W: "Plains",
+  U: "Island",
+  B: "Swamp",
+  R: "Mountain",
+  G: "Forest"
+};
+
+generateBtn.addEventListener("click", generateDeck);
+commanderInput.addEventListener("input", onCommanderInput);
+commanderInput.addEventListener("keydown", onAutocompleteKeydown);
+
+document.addEventListener("click", (event) => {
+  if (!autocompleteList.contains(event.target) && event.target !== commanderInput) {
+    hideAutocomplete();
+  }
+});
+
+function updateProgress(percent, statusText, subStatus = "") {
+  document.getElementById("progressBar").style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  document.getElementById("statusText").textContent = statusText;
+  document.getElementById("subStatusText").textContent = subStatus;
 }
 
+function clearLog() {
+  document.getElementById("activityLog").innerHTML = "";
+}
 
-async function generateDeck(){
+function logMessage(message) {
+  const log = document.getElementById("activityLog");
+  const line = document.createElement("div");
+  const now = new Date();
+  const timestamp = now.toLocaleTimeString();
+  line.className = "log-line";
+  line.textContent = `[${timestamp}] ${message}`;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
 
-    updateProgress(5,"Parsing CSV...");
+function setGenerateEnabled(enabled) {
+  generateBtn.disabled = !enabled;
+}
 
-    const commander = document.getElementById("commanderInput").value;
-    const file = document.getElementById("csvFile").files[0];
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-    if(!commander || !file){
-        alert("Enter commander and upload CSV");
-        return;
+async function onCommanderInput() {
+  const query = commanderInput.value.trim();
+
+  if (autocompleteTimer) {
+    clearTimeout(autocompleteTimer);
+  }
+
+  if (query.length < 2) {
+    hideAutocomplete();
+    return;
+  }
+
+  autocompleteTimer = setTimeout(async () => {
+    try {
+      renderAutocompleteLoading();
+
+      const matches = await fetchCommanderAutocomplete(query);
+      const legalMatches = await filterCommanderAutocomplete(matches);
+
+      renderAutocomplete(legalMatches);
+    } catch (error) {
+      hideAutocomplete();
     }
+  }, 180);
+}
 
+function onAutocompleteKeydown(event) {
+  if (autocompleteList.classList.contains("hidden")) {
+    return;
+  }
+
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    activeAutocompleteIndex = Math.min(activeAutocompleteIndex + 1, currentAutocompleteItems.length - 1);
+    refreshActiveAutocompleteItem();
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    activeAutocompleteIndex = Math.max(activeAutocompleteIndex - 1, 0);
+    refreshActiveAutocompleteItem();
+  } else if (event.key === "Enter") {
+    if (activeAutocompleteIndex >= 0 && currentAutocompleteItems[activeAutocompleteIndex]) {
+      event.preventDefault();
+      selectAutocompleteItem(currentAutocompleteItems[activeAutocompleteIndex]);
+    }
+  } else if (event.key === "Escape") {
+    hideAutocomplete();
+  }
+}
+
+function renderAutocompleteLoading() {
+  autocompleteList.innerHTML = "";
+  const div = document.createElement("div");
+  div.className = "autocomplete-item";
+  div.textContent = "Checking legal commanders...";
+  autocompleteList.appendChild(div);
+  autocompleteList.classList.remove("hidden");
+}
+
+async function fetchCommanderAutocomplete(query) {
+  const response = await fetch(`${SCRYFALL_AUTOCOMPLETE}${encodeURIComponent(query)}`);
+  if (!response.ok) {
+    throw new Error("Autocomplete request failed.");
+  }
+
+  const data = await response.json();
+  return Array.isArray(data.data) ? data.data.slice(0, 12) : [];
+}
+
+async function filterCommanderAutocomplete(items) {
+  if (!items.length) return [];
+
+  const cardMap = await fetchCardDataBatchWithProgress(items);
+
+  const legal = [];
+  for (const name of items) {
+    const card = cardMap.get(normalizeCardName(name));
+    if (card && canBeCommander(card)) {
+      legal.push(card.name);
+    }
+  }
+
+  return legal;
+}
+
+function renderAutocomplete(items) {
+  currentAutocompleteItems = items;
+  activeAutocompleteIndex = -1;
+  autocompleteList.innerHTML = "";
+
+  if (!items.length) {
+    const div = document.createElement("div");
+    div.className = "autocomplete-item";
+    div.textContent = "No legal commanders found";
+    autocompleteList.appendChild(div);
+    autocompleteList.classList.remove("hidden");
+    return;
+  }
+
+  items.forEach((item, index) => {
+    const div = document.createElement("div");
+    div.className = "autocomplete-item";
+    div.textContent = item;
+    div.addEventListener("click", () => selectAutocompleteItem(item));
+    div.dataset.index = String(index);
+    autocompleteList.appendChild(div);
+  });
+
+  autocompleteList.classList.remove("hidden");
+}
+
+function refreshActiveAutocompleteItem() {
+  const items = autocompleteList.querySelectorAll(".autocomplete-item");
+  items.forEach((el) => el.classList.remove("active"));
+
+  if (activeAutocompleteIndex >= 0 && items[activeAutocompleteIndex]) {
+    items[activeAutocompleteIndex].classList.add("active");
+  }
+}
+
+function selectAutocompleteItem(name) {
+  commanderInput.value = name;
+  hideAutocomplete();
+}
+
+function hideAutocomplete() {
+  autocompleteList.classList.add("hidden");
+  autocompleteList.innerHTML = "";
+  currentAutocompleteItems = [];
+  activeAutocompleteIndex = -1;
+}
+
+async function generateDeck() {
+  const commanderName = commanderInput.value.trim();
+  const file = document.getElementById("csvFile").files[0];
+
+  clearLog();
+  updateProgress(0, "Starting...");
+  displayThemes([]);
+  displayDeck([]);
+  document.getElementById("deckSummary").textContent = "";
+
+  if (!commanderName || !file) {
+    alert("Enter a commander and upload a ManaBox CSV.");
+    updateProgress(0, "Idle");
+    return;
+  }
+
+  setGenerateEnabled(false);
+
+  try {
+    logMessage("Parsing uploaded CSV.");
+    updateProgress(5, "Parsing CSV...");
     const collection = await parseCSV(file);
+    const collectionNames = Array.from(collection.keys());
+    logMessage(`Parsed ${collectionNames.length} unique cards from CSV.`);
 
+    updateProgress(10, "Validating commander...");
+    logMessage(`Fetching commander info for "${commanderName}" from Scryfall.`);
+    const commanderData = await getCommander(commanderName);
 
-    updateProgress(15,"Fetching commander data from Scryfall...");
-
-    const commanderData = await getCommander(commander);
-
-
-    updateProgress(25,"Fetching synergy data from EDHREC...");
-
-    const edhrecCards = await getEDHREC(commander);
-
-
-    updateProgress(40,"Detecting commander themes...");
-
-    const themes = await detectCommanderThemes(edhrecCards);
-
-    displayThemes(themes);
-
-
-    updateProgress(50,"Analyzing cards you own...");
-
-    const deck = [];
-
-    let processed = 0;
-
-    for(const c of edhrecCards){
-
-        processed++;
-
-        if(!(c.name in collection)) continue;
-
-        const card = await getCardData(c.name);
-
-        if(!card) continue;
-
-        if(!legalForCommander(card.colors, commanderData.colors)) continue;
-
-        const role = detectRole(card);
-
-        const score = scoreCard(card,c,themes);
-
-        deck.push({
-            name:c.name,
-            role:role,
-            score:score
-        });
-
-        if(processed % 20 === 0){
-
-            let percent = 50 + (processed/edhrecCards.length)*40;
-
-            updateProgress(percent,"Checking cards via Scryfall...");
-        }
+    if (!commanderData) {
+      throw new Error("Commander not found on Scryfall.");
     }
 
+    if (!canBeCommander(commanderData)) {
+      throw new Error("Selected card does not appear to be a legal commander.");
+    }
 
-    updateProgress(90,"Sorting deck...");
+    logMessage(`Commander found: ${commanderData.name} | Color identity: ${commanderData.colors.join("") || "Colorless"}`);
 
-    deck.sort((a,b)=>b.score-a.score);
+    updateProgress(18, "Fetching EDHREC synergy data...");
+    logMessage("Loading commander recommendations from EDHREC.");
+    const edhrecCards = await getEDHREC(commanderData.name);
 
+    if (!edhrecCards.length) {
+      throw new Error("No EDHREC data returned for this commander.");
+    }
 
-    updateProgress(95,"Finalizing decklist...");
+    logMessage(`EDHREC returned ${edhrecCards.length} candidate cards.`);
 
-    displayDeck(deck.slice(0,99));
+    updateProgress(28, "Detecting commander themes...");
+    logMessage("Analyzing top synergy cards to infer deck themes.");
+    const commanderThemes = await detectCommanderThemes(edhrecCards);
+    displayThemes(commanderThemes);
+    logMessage(`Detected themes: ${commanderThemes.join(", ") || "none"}`);
 
+    updateProgress(38, "Matching your collection...");
+    const ownedCandidates = edhrecCards.filter((c) => hasOwnedCard(collection, c.name));
+    logMessage(`${ownedCandidates.length} EDHREC cards also exist in your uploaded collection.`);
 
-    updateProgress(100,"Deck complete!");
+    updateProgress(45, "Fetching owned card metadata from Scryfall...");
+    logMessage("Batching Scryfall collection requests for owned candidate cards.");
+    const ownedCardData = await fetchCardDataBatchWithProgress(
+      ownedCandidates.map((c) => c.name),
+      (done, total) => {
+        const pct = 45 + Math.floor((done / Math.max(total, 1)) * 20);
+        updateProgress(pct, "Fetching owned card metadata from Scryfall...", `Fetched ${done} / ${total}`);
+      }
+    );
 
+    logMessage(`Received metadata for ${ownedCardData.size} owned cards.`);
+
+    updateProgress(67, "Checking legality and scoring cards...");
+    const scoredNonlands = [];
+    let processed = 0;
+    const totalToScore = ownedCandidates.length;
+
+    for (const edhrecCard of ownedCandidates) {
+      processed += 1;
+      const normalizedName = normalizeCardName(edhrecCard.name);
+      const card = ownedCardData.get(normalizedName);
+
+      if (!card) {
+        maybeUpdateScoringProgress(processed, totalToScore);
+        continue;
+      }
+
+      if (isBasicLand(card.name)) {
+        maybeUpdateScoringProgress(processed, totalToScore);
+        continue;
+      }
+
+      if (!legalForCommander(card.colors, commanderData.colors)) {
+        maybeUpdateScoringProgress(processed, totalToScore);
+        continue;
+      }
+
+      const role = detectRole(card);
+      const score = scoreCard(card, edhrecCard, commanderThemes);
+
+      scoredNonlands.push({
+        name: card.name,
+        role,
+        score,
+        type: card.type,
+        cmc: card.cmc,
+        colors: card.colors
+      });
+
+      maybeUpdateScoringProgress(processed, totalToScore);
+    }
+
+    function maybeUpdateScoringProgress(done, total) {
+      if (done % 20 === 0 || done === total) {
+        updateProgress(
+          67 + Math.floor((done / Math.max(total, 1)) * 15),
+          "Checking legality and scoring cards...",
+          `Processed ${done} / ${total}`
+        );
+      }
+    }
+
+    logMessage(`After legality checks, ${scoredNonlands.length} nonland/nonbasic cards remain.`);
+
+    updateProgress(84, "Building deck structure...");
+    logMessage("Selecting nonland cards, then generating a basic land mana base.");
+    const finalDeck = buildDeckFromScoredPool(scoredNonlands, commanderData.colors);
+    logMessage(`Built deck with ${finalDeck.length} total cards including basics.`);
+
+    updateProgress(97, "Rendering results...");
+    displayDeck(finalDeck);
+    displayDeckSummary(finalDeck, commanderData.name, commanderData.colors);
+
+    updateProgress(100, "Deck complete!", `${finalDeck.length} cards selected`);
+    logMessage("Finished.");
+  } catch (error) {
+    updateProgress(0, "Error");
+    logMessage(`ERROR: ${error.message}`);
+    alert(error.message);
+  } finally {
+    setGenerateEnabled(true);
+  }
 }
 
+function parseCSV(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
 
-function parseCSV(file){
+    reader.onload = (event) => {
+      try {
+        const text = event.target.result;
+        const lines = text.split(/\r?\n/).filter(Boolean);
 
-    return new Promise((resolve)=>{
+        if (lines.length < 2) {
+          throw new Error("CSV file appears to be empty.");
+        }
 
-        const reader = new FileReader();
+        const header = splitCsvLine(lines[0]).map((x) => x.trim().toLowerCase());
+        const nameIndex = header.findIndex((h) => h === "name");
+        const qtyIndex = header.findIndex((h) => h === "quantity");
 
-        reader.onload=function(e){
+        if (nameIndex === -1 || qtyIndex === -1) {
+          throw new Error("CSV must contain Name and Quantity columns.");
+        }
 
-            const lines = e.target.result.split("\n");
+        const collection = new Map();
 
-            const collection={};
+        for (let i = 1; i < lines.length; i++) {
+          const cols = splitCsvLine(lines[i]);
+          if (!cols.length) continue;
 
-            for(let i=1;i<lines.length;i++){
+          const rawName = (cols[nameIndex] || "").trim();
+          const rawQty = (cols[qtyIndex] || "").trim();
 
-                const cols = lines[i].split(",");
+          if (!rawName) continue;
 
-                const name = cols[0];
-                const qty = parseInt(cols[1]);
+          const quantity = Number.parseInt(rawQty, 10);
+          const normalizedName = normalizeCardName(rawName);
 
-                if(name) collection[name]=qty;
-            }
+          if (!Number.isFinite(quantity) || quantity <= 0) continue;
 
-            resolve(collection);
-        };
+          collection.set(normalizedName, (collection.get(normalizedName) || 0) + quantity);
+        }
 
-        reader.readAsText(file);
+        resolve(collection);
+      } catch (error) {
+        reject(error);
+      }
+    };
 
+    reader.onerror = () => reject(new Error("Failed to read CSV file."));
+    reader.readAsText(file);
+  });
+}
+
+function splitCsvLine(line) {
+  const result = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    const next = line[i + 1];
+
+    if (char === '"' && inQuotes && next === '"') {
+      current += '"';
+      i++;
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (char === "," && !inQuotes) {
+      result.push(current);
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  result.push(current);
+  return result;
+}
+
+function normalizeCardName(name) {
+  return String(name || "").trim().toLowerCase();
+}
+
+function hasOwnedCard(collection, cardName) {
+  const normalized = normalizeCardName(cardName);
+
+  if (collection.has(normalized)) {
+    return true;
+  }
+
+  if (isBasicLand(cardName)) {
+    return true;
+  }
+
+  return false;
+}
+
+function isBasicLand(name) {
+  const normalized = normalizeCardName(name);
+  return BASIC_LANDS.some((land) => normalizeCardName(land.name) === normalized);
+}
+
+async function getCommander(name) {
+  const response = await fetch(`${SCRYFALL_NAMED}${encodeURIComponent(name)}`);
+  if (!response.ok) {
+    return null;
+  }
+
+  const data = await response.json();
+  return convertScryfallCard(data);
+}
+
+async function getEDHREC(commanderName) {
+  const slug = toEdhrecSlug(commanderName);
+  const response = await fetch(`${EDHREC_BASE}${slug}.json`);
+
+  if (!response.ok) {
+    throw new Error("Failed to fetch EDHREC commander data.");
+  }
+
+  const data = await response.json();
+  const cardlists = data?.container?.json_dict?.cardlists;
+
+  if (!Array.isArray(cardlists)) {
+    throw new Error("Unexpected EDHREC response format.");
+  }
+
+  const deduped = new Map();
+
+  for (const section of cardlists) {
+    const cards = Array.isArray(section.cardviews) ? section.cardviews : [];
+    for (const card of cards) {
+      if (!card?.name) continue;
+
+      const key = normalizeCardName(card.name);
+      if (!deduped.has(key)) {
+        deduped.set(key, {
+          name: card.name,
+          synergy: Number(card.synergy || 0),
+          decks: Number(card.num_decks || 0),
+          label: section.header || ""
+        });
+      }
+    }
+  }
+
+  return Array.from(deduped.values());
+}
+
+function toEdhrecSlug(name) {
+  return name
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/,/g, "")
+    .replace(/\//g, " ")
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-");
+}
+
+function convertScryfallCard(data) {
+  return {
+    name: data.name,
+    type: String(data.type_line || "").toLowerCase(),
+    text: String(data.oracle_text || "").toLowerCase(),
+    cmc: Number(data.cmc || 0),
+    colors: Array.isArray(data.color_identity) ? data.color_identity : [],
+    layout: String(data.layout || "").toLowerCase(),
+    rarity: String(data.rarity || "").toLowerCase(),
+    legalities: data.legalities || {},
+    rawTypeLine: String(data.type_line || ""),
+    rawOracleText: String(data.oracle_text || "")
+  };
+}
+
+async function fetchCardDataBatchWithProgress(cardNames, progressCallback) {
+  const uniqueNames = Array.from(new Set(cardNames.map(normalizeCardName)));
+  const missingNames = uniqueNames.filter((name) => !cardCache.has(name));
+  const total = missingNames.length;
+  let done = 0;
+
+  if (total === 0) {
+    if (progressCallback) progressCallback(0, 0);
+    return new Map(uniqueNames.map((name) => [name, cardCache.get(name)]).filter(([, value]) => value));
+  }
+
+  const chunkSize = 75;
+
+  for (let i = 0; i < missingNames.length; i += chunkSize) {
+    const chunk = missingNames.slice(i, i + chunkSize);
+    const identifiers = chunk.map((name) => ({ name }));
+
+    const response = await fetch(SCRYFALL_COLLECTION, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ identifiers })
     });
 
-}
-
-
-async function getCommander(name){
-
-    const res = await fetch(SCRYFALL + encodeURIComponent(name));
-
-    const data = await res.json();
-
-    return {
-        name:data.name,
-        colors:data.color_identity
-    };
-}
-
-
-async function getEDHREC(commander){
-
-    const slug = commander
-        .toLowerCase()
-        .replace(",", "")
-        .replace(/ /g,"-");
-
-    const res = await fetch(EDHREC + slug + ".json");
-
-    const data = await res.json();
-
-    const cards=[];
-
-    for(const section of data.container.json_dict.cardlists){
-
-        for(const card of section.cardviews){
-
-            cards.push({
-                name:card.name,
-                synergy:card.synergy || 0,
-                decks:card.num_decks || 0
-            });
-
-        }
+    if (!response.ok) {
+      throw new Error("Scryfall collection request failed.");
     }
 
-    return cards;
-}
+    const data = await response.json();
+    const returnedCards = Array.isArray(data.data) ? data.data : [];
 
-
-async function getCardData(name){
-
-    const res = await fetch(SCRYFALL + encodeURIComponent(name));
-
-    if(!res.ok) return null;
-
-    const data = await res.json();
-
-    return {
-        name:data.name,
-        type:data.type_line.toLowerCase(),
-        text:(data.oracle_text || "").toLowerCase(),
-        cmc:data.cmc,
-        colors:data.color_identity
-    };
-}
-
-
-function legalForCommander(cardColors, commanderColors){
-
-    for(const c of cardColors){
-
-        if(!commanderColors.includes(c)) return false;
+    for (const rawCard of returnedCards) {
+      const converted = convertScryfallCard(rawCard);
+      cardCache.set(normalizeCardName(converted.name), converted);
     }
 
+    for (const requestedName of chunk) {
+      if (!cardCache.has(requestedName)) {
+        cardCache.set(requestedName, null);
+      }
+    }
+
+    done += chunk.length;
+    if (progressCallback) progressCallback(done, total);
+
+    await sleep(80);
+  }
+
+  const results = new Map();
+  for (const name of uniqueNames) {
+    const cached = cardCache.get(name);
+    if (cached) {
+      results.set(name, cached);
+    }
+  }
+
+  return results;
+}
+
+function canBeCommander(card) {
+  const type = card.type;
+  const text = card.text;
+
+  if (type.includes("legendary creature")) {
     return true;
+  }
+
+  if (text.includes("can be your commander")) {
+    return true;
+  }
+
+  return false;
 }
 
+async function detectCommanderThemes(edhrecCards) {
+  const topSynergy = [...edhrecCards]
+    .sort((a, b) => b.synergy - a.synergy)
+    .slice(0, 24);
 
-function detectRole(card){
+  const themeCounts = {
+    graveyard: 0,
+    tokens: 0,
+    artifacts: 0,
+    enchantments: 0,
+    lands: 0,
+    spellslinger: 0,
+    sacrifice: 0,
+    counters: 0,
+    lifegain: 0,
+    reanimator: 0
+  };
+
+  const topCardMap = await fetchCardDataBatchWithProgress(topSynergy.map((c) => c.name));
+
+  for (const entry of topSynergy) {
+    const card = topCardMap.get(normalizeCardName(entry.name));
+    if (!card) continue;
 
     const text = card.text;
     const type = card.type;
 
-    if(type.includes("land")) return "land";
+    if (text.includes("graveyard")) themeCounts.graveyard += 1;
+    if (text.includes("create") && text.includes("token")) themeCounts.tokens += 1;
+    if (type.includes("artifact")) themeCounts.artifacts += 1;
+    if (type.includes("enchantment")) themeCounts.enchantments += 1;
+    if (text.includes("land") || text.includes("landfall")) themeCounts.lands += 1;
+    if (type.includes("instant") || type.includes("sorcery") || text.includes("cast an instant") || text.includes("cast a sorcery")) {
+      themeCounts.spellslinger += 1;
+    }
+    if (text.includes("sacrifice")) themeCounts.sacrifice += 1;
+    if (text.includes("+1/+1 counter") || text.includes("counter on")) themeCounts.counters += 1;
+    if (text.includes("gain life") || text.includes("life total")) themeCounts.lifegain += 1;
+    if (text.includes("return target creature card from your graveyard") || text.includes("reanimate")) {
+      themeCounts.reanimator += 1;
+    }
+  }
 
-    if(text.includes("add {") || text.includes("treasure")) return "ramp";
-
-    if(text.includes("draw")) return "draw";
-
-    if(text.includes("destroy target") || text.includes("exile target")) return "removal";
-
-    if(text.includes("destroy all creatures")) return "wipe";
-
-    return "synergy";
+  return Object.entries(themeCounts)
+    .sort((a, b) => b[1] - a[1])
+    .filter(([, count]) => count > 0)
+    .slice(0, 4)
+    .map(([theme]) => theme);
 }
 
+function detectRole(card) {
+  const text = card.text;
+  const type = card.type;
 
-function detectCardTags(card){
+  if (type.includes("land")) return "land";
 
-    const tags=[];
+  if (
+    text.includes("add {") ||
+    text.includes("create a treasure") ||
+    text.includes("create treasure") ||
+    text.includes("search your library for a land")
+  ) {
+    return "ramp";
+  }
 
-    if(card.text.includes("graveyard")) tags.push("graveyard");
+  if (
+    text.includes("draw a card") ||
+    text.includes("draw two cards") ||
+    text.includes("draw three cards") ||
+    text.includes("whenever you draw")
+  ) {
+    return "draw";
+  }
 
-    if(card.text.includes("token")) tags.push("tokens");
+  if (
+    text.includes("destroy target") ||
+    text.includes("exile target") ||
+    text.includes("counter target spell") ||
+    text.includes("return target permanent")
+  ) {
+    return "removal";
+  }
 
-    if(card.type.includes("artifact")) tags.push("artifacts");
+  if (
+    text.includes("destroy all creatures") ||
+    text.includes("exile all creatures") ||
+    text.includes("each creature gets")
+  ) {
+    return "wipe";
+  }
 
-    if(card.type.includes("enchantment")) tags.push("enchantments");
-
-    if(card.text.includes("draw")) tags.push("draw");
-
-    if(card.text.includes("land")) tags.push("lands");
-
-    return tags;
+  return "synergy";
 }
 
+function detectCardTags(card) {
+  const tags = [];
+  const text = card.text;
+  const type = card.type;
 
-async function detectCommanderThemes(cards){
+  if (text.includes("graveyard")) tags.push("graveyard");
+  if (text.includes("token")) tags.push("tokens");
+  if (type.includes("artifact")) tags.push("artifacts");
+  if (type.includes("enchantment")) tags.push("enchantments");
+  if (text.includes("land") || text.includes("landfall")) tags.push("lands");
+  if (type.includes("instant") || type.includes("sorcery")) tags.push("spellslinger");
+  if (text.includes("sacrifice")) tags.push("sacrifice");
+  if (text.includes("+1/+1 counter") || text.includes("counter on")) tags.push("counters");
+  if (text.includes("gain life") || text.includes("life total")) tags.push("lifegain");
+  if (text.includes("return target creature card from your graveyard")) tags.push("reanimator");
 
-    const themes={
-        graveyard:0,
-        tokens:0,
-        artifacts:0,
-        enchantments:0,
-        lands:0
-    };
+  return tags;
+}
 
-    for(let i=0;i<30;i++){
+function scoreCard(card, edhrecCard, commanderThemes) {
+  const synergyScore = Number(edhrecCard.synergy || 0) * 6;
+  const popularityScore = Math.min(Number(edhrecCard.decks || 0) / 1200, 18);
 
-        const card = await getCardData(cards[i].name);
+  let roleBonus = 0;
+  const role = detectRole(card);
 
-        if(!card) continue;
+  if (role === "ramp") roleBonus = 4;
+  else if (role === "draw") roleBonus = 4;
+  else if (role === "removal") roleBonus = 4;
+  else if (role === "wipe") roleBonus = 3;
 
-        if(card.text.includes("graveyard")) themes.graveyard++;
+  let curveBonus = 0;
+  if (card.cmc <= 2) curveBonus = 2;
+  else if (card.cmc <= 4) curveBonus = 3;
+  else if (card.cmc <= 6) curveBonus = 1;
 
-        if(card.text.includes("token")) themes.tokens++;
+  const tags = detectCardTags(card);
+  let themeBonus = 0;
+  for (const tag of tags) {
+    if (commanderThemes.includes(tag)) {
+      themeBonus += 4;
+    }
+  }
 
-        if(card.type.includes("artifact")) themes.artifacts++;
+  return synergyScore + popularityScore + roleBonus + curveBonus + themeBonus;
+}
 
-        if(card.type.includes("enchantment")) themes.enchantments++;
+function legalForCommander(cardColors, commanderColors) {
+  for (const color of cardColors) {
+    if (!commanderColors.includes(color)) {
+      return false;
+    }
+  }
+  return true;
+}
 
-        if(card.text.includes("land")) themes.lands++;
+function buildDeckFromScoredPool(scoredNonlands, commanderColors) {
+  const deck = [];
+  const usedNames = new Set();
+
+  const targetLandCount = recommendLandCount(commanderColors);
+  const targetNonlandCount = 99 - targetLandCount;
+
+  const targets = {
+    ramp: 10,
+    draw: 10,
+    removal: 8,
+    wipe: 3
+  };
+
+  const byRole = {
+    ramp: [],
+    draw: [],
+    removal: [],
+    wipe: [],
+    synergy: []
+  };
+
+  for (const card of scoredNonlands) {
+    if (byRole[card.role]) {
+      byRole[card.role].push(card);
+    } else {
+      byRole.synergy.push(card);
+    }
+  }
+
+  for (const role of Object.keys(byRole)) {
+    byRole[role].sort((a, b) => b.score - a.score);
+  }
+
+  for (const [role, count] of Object.entries(targets)) {
+    let addedForRole = 0;
+    for (const card of byRole[role]) {
+      if (deck.length >= targetNonlandCount) break;
+      if (usedNames.has(normalizeCardName(card.name))) continue;
+
+      deck.push(card);
+      usedNames.add(normalizeCardName(card.name));
+      addedForRole += 1;
+
+      if (addedForRole >= count) break;
+    }
+  }
+
+  const remaining = [...byRole.synergy, ...byRole.ramp, ...byRole.draw, ...byRole.removal, ...byRole.wipe]
+    .sort((a, b) => b.score - a.score);
+
+  for (const card of remaining) {
+    if (deck.length >= targetNonlandCount) break;
+    if (usedNames.has(normalizeCardName(card.name))) continue;
+
+    deck.push(card);
+    usedNames.add(normalizeCardName(card.name));
+  }
+
+  const lands = buildBasicManaBase(commanderColors, targetLandCount);
+
+  return [...deck, ...lands].slice(0, 99);
+}
+
+function recommendLandCount(commanderColors) {
+  if (commanderColors.length === 0) return 38;
+  if (commanderColors.length === 1) return 36;
+  if (commanderColors.length === 2) return 37;
+  return 38;
+}
+
+function buildBasicManaBase(commanderColors, landCount) {
+  if (landCount <= 0) return [];
+
+  if (commanderColors.length === 0) {
+    return Array.from({ length: landCount }, () => ({
+      name: "Wastes",
+      role: "land",
+      score: 0,
+      type: "basic land",
+      cmc: 0,
+      colors: []
+    }));
+  }
+
+  const colors = [...commanderColors];
+  const colorWeights = {};
+  for (const color of colors) {
+    colorWeights[color] = 1;
+  }
+
+  const basePerColor = Math.floor(landCount / colors.length);
+  let remainder = landCount % colors.length;
+
+  const lands = [];
+
+  for (const color of colors) {
+    let count = basePerColor;
+    if (remainder > 0) {
+      count += 1;
+      remainder -= 1;
     }
 
-    return Object.entries(themes)
-        .sort((a,b)=>b[1]-a[1])
-        .slice(0,3)
-        .map(t=>t[0]);
+    const landName = COLOR_TO_BASIC[color];
+    for (let i = 0; i < count; i++) {
+      lands.push({
+        name: landName,
+        role: "land",
+        score: 0,
+        type: "basic land",
+        cmc: 0,
+        colors: [color]
+      });
+    }
+  }
+
+  return lands;
 }
 
+function displayThemes(themes) {
+  const ul = document.getElementById("themes");
+  ul.innerHTML = "";
 
-function scoreCard(card,edhrec,themes){
+  if (!themes.length) {
+    const li = document.createElement("li");
+    li.textContent = "No clear themes detected.";
+    ul.appendChild(li);
+    return;
+  }
 
-    let score = edhrec.synergy*5 + edhrec.decks/1000;
+  themes.forEach((theme) => {
+    const li = document.createElement("li");
+    li.textContent = theme;
+    ul.appendChild(li);
+  });
+}
 
-    const tags = detectCardTags(card);
+function displayDeck(deck) {
+  const ul = document.getElementById("deck");
+  ul.innerHTML = "";
 
-    for(const t of tags){
+  if (!deck.length) {
+    return;
+  }
 
-        if(themes.includes(t)) score += 5;
+  const merged = mergeDeckCounts(deck);
+
+  for (const item of merged) {
+    const li = document.createElement("li");
+    if (item.role === "land") {
+      li.textContent = `${item.count}x ${item.name} — ${item.role}`;
+    } else {
+      li.textContent = `${item.count}x ${item.name} — ${item.role} — score ${item.score.toFixed(2)}`;
+    }
+    ul.appendChild(li);
+  }
+}
+
+function mergeDeckCounts(deck) {
+  const map = new Map();
+
+  for (const card of deck) {
+    const key = normalizeCardName(card.name);
+    if (!map.has(key)) {
+      map.set(key, {
+        name: card.name,
+        role: card.role,
+        score: card.score || 0,
+        count: 1
+      });
+    } else {
+      map.get(key).count += 1;
+    }
+  }
+
+  return Array.from(map.values()).sort((a, b) => {
+    if (a.role === "land" && b.role !== "land") return 1;
+    if (a.role !== "land" && b.role === "land") return -1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function displayDeckSummary(deck, commanderName, commanderColors) {
+  const summary = document.getElementById("deckSummary");
+
+  const roleCounts = {
+    ramp: 0,
+    draw: 0,
+    removal: 0,
+    wipe: 0,
+    synergy: 0,
+    land: 0
+  };
+
+  const landBreakdown = {};
+
+  for (const card of deck) {
+    if (roleCounts[card.role] !== undefined) {
+      roleCounts[card.role] += 1;
     }
 
-    return score;
-}
+    if (card.role === "land") {
+      landBreakdown[card.name] = (landBreakdown[card.name] || 0) + 1;
+    }
+  }
 
+  const colorText = commanderColors.length ? commanderColors.join("") : "Colorless";
+  const landText = Object.entries(landBreakdown)
+    .map(([name, count]) => `${name}: ${count}`)
+    .join(", ");
 
-function displayThemes(themes){
-
-    const ul = document.getElementById("themes");
-
-    ul.innerHTML="";
-
-    themes.forEach(t=>{
-
-        const li=document.createElement("li");
-
-        li.textContent=t;
-
-        ul.appendChild(li);
-    });
-}
-
-
-function displayDeck(deck){
-
-    const ul=document.getElementById("deck");
-
-    ul.innerHTML="";
-
-    deck.forEach(card=>{
-
-        const li=document.createElement("li");
-
-        li.textContent=`${card.name} — ${card.role} (${card.score.toFixed(2)})`;
-
-        ul.appendChild(li);
-    });
+  summary.textContent =
+    `Commander: ${commanderName}
+Color Identity: ${colorText}
+Deck cards: ${deck.length}
+Ramp: ${roleCounts.ramp}, Draw: ${roleCounts.draw}, Removal: ${roleCounts.removal}, Wipes: ${roleCounts.wipe}, Synergy: ${roleCounts.synergy}, Lands: ${roleCounts.land}
+Mana base: ${landText}`;
 }
