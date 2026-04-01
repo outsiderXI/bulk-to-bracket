@@ -35,7 +35,8 @@ label {
 }
 
 input[type="text"],
-input[type="file"] {
+input[type="file"],
+textarea {
   width: 100%;
   padding: 10px 12px;
   border-radius: 8px;
@@ -172,6 +173,14 @@ li {
 
 .hidden {
   display: none;
+}
+
+.export-box {
+  min-height: 320px;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 13px;
+  line-height: 1.45;
+  resize: vertical;
 }
 
 @media (max-width: 900px) {
