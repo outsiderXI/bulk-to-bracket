@@ -46,8 +46,13 @@
       <div class="panel">
         <h2>Commander</h2>
         <div class="commander-column">
-          <img id="commanderImage" class="commander-image hidden" alt="Commander card image" />
+          <div id="commanderImageWrap" class="commander-image-wrap">
+            <div id="commanderImageSkeleton" class="commander-image-skeleton hidden"></div>
+            <img id="commanderImage" class="commander-image hidden" alt="Commander card image" />
+          </div>
+
           <div id="commanderMeta" class="commander-meta"></div>
+          <div id="colorPips" class="color-pips"></div>
 
           <h3 class="themes-heading">Detected Themes</h3>
           <ul id="themes"></ul>
@@ -57,11 +62,18 @@
       <div class="panel">
         <h2>Moxfield Export</h2>
         <div id="deckSummary" class="deck-summary"></div>
+
+        <div class="preview-heading">Preview</div>
+        <div id="exportPreview" class="export-preview"></div>
+
+        <div class="preview-heading">Plain Text Export</div>
         <textarea id="moxfieldExport" class="export-box" readonly></textarea>
         <button id="copyExportBtn" type="button">Copy Decklist</button>
       </div>
     </div>
   </div>
+
+  <div id="toast" class="toast hidden">Copied.</div>
 
   <script src="script.js"></script>
 </body>
