@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>MTG Commander Deck Builder</title>
   <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
   <div class="app">
@@ -34,18 +35,13 @@
       <p>It uses your owned cards, commander themes, EDHREC synergy, and collection-based fallback logic to fill out the list.</p>
     </div>
 
-    <div class="panel">
-      <h2>Progress</h2>
+    <div class="panel progress-panel">
+      <h2>Build Progress</h2>
       <div id="progressContainer">
         <div id="progressBar"></div>
       </div>
       <div id="statusText">Idle</div>
       <div id="subStatusText" class="sub-status"></div>
-
-      <div class="log-wrap">
-        <div class="log-header">Activity Log</div>
-        <div id="activityLog" class="activity-log"></div>
-      </div>
     </div>
 
     <div id="postBuildControls" class="panel hidden">
@@ -80,6 +76,19 @@
 
       <div class="panel">
         <h2>Deck Report</h2>
+
+        <div class="dashboard-grid">
+          <div id="deckStats" class="panel stat-panel"></div>
+          <div class="panel chart-panel">
+            <div class="chart-title">Mana Curve</div>
+            <canvas id="manaCurveChart" height="180"></canvas>
+          </div>
+          <div class="panel chart-panel">
+            <div class="chart-title">Card Type Breakdown</div>
+            <canvas id="typeBreakdownChart" height="220"></canvas>
+          </div>
+        </div>
+
         <div id="deckSummary" class="deck-summary"></div>
         <div id="deckBracket" class="deck-bracket"></div>
         <div id="deckGameChangers" class="deck-game-changers"></div>
