@@ -2666,6 +2666,7 @@ async function generateDeck() {
     logMessage("Analyzing EDHREC and your collection to infer deck themes.");
     const commanderThemes = await detectCommanderThemes(
       edhrecCards,
+      edhrecTags,
       collection,
       allOwnedCardData,
       commanderData.colors
