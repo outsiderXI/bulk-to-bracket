@@ -202,6 +202,7 @@ function renderPreviewCardLink(cardName, scryfallUrl, imageUrl) {
   const safeName = escapeHtml(cardName || "Unknown Card");
   const safeUrl = escapeHtml(scryfallUrl || "#");
   const safeImage = escapeHtml(imageUrl || "");
+  const safeCardName = escapeHtml(cardName || "");
 
   return `
     <span class="preview-card-link-wrap">
@@ -210,6 +211,7 @@ function renderPreviewCardLink(cardName, scryfallUrl, imageUrl) {
         href="${safeUrl}"
         target="_blank"
         rel="noopener noreferrer"
+        data-card-name="${safeCardName}"
         ${safeImage ? `data-card-image="${safeImage}"` : ""}
       >
         ${safeName}
@@ -219,6 +221,8 @@ function renderPreviewCardLink(cardName, scryfallUrl, imageUrl) {
 }
 
 let hoverPreviewEl = null;
+let hoverImageCache = new Map();
+let previewHoverBound = false;
 
 function ensureHoverPreview() {
   if (hoverPreviewEl) return hoverPreviewEl;
@@ -269,28 +273,75 @@ function showCardHoverPreview(imageUrl, mouseEvent) {
   el.classList.add("visible");
 }
 
+async function resolveHoverImageUrl(link) {
+  const inlineImage = link.getAttribute("data-card-image") || "";
+  if (inlineImage) return inlineImage;
+
+  const cardName = (link.getAttribute("data-card-name") || "").trim();
+  if (!cardName) return "";
+
+  if (hoverImageCache.has(cardName)) {
+    return hoverImageCache.get(cardName);
+  }
+
+  try {
+    const response = await fetch(`${SCRYFALL_NAMED}${encodeURIComponent(cardName)}`);
+    if (!response.ok) throw new Error(`Failed to fetch image for ${cardName}`);
+    const data = await response.json();
+    const imageUrl = getCardImageUrl(data);
+    hoverImageCache.set(cardName, imageUrl || "");
+    if (imageUrl) {
+      link.setAttribute("data-card-image", imageUrl);
+    }
+    return imageUrl || "";
+  } catch (error) {
+    console.warn("Unable to fetch hover image", cardName, error);
+    hoverImageCache.set(cardName, "");
+    return "";
+  }
+}
+
 function hideCardHoverPreview() {
   if (!hoverPreviewEl) return;
   hoverPreviewEl.classList.remove("visible");
 }
 
 function bindPreviewHoverImages() {
-  const links = document.querySelectorAll(".preview-card-link[data-card-image]");
+  if (previewHoverBound) return;
 
-  links.forEach((link) => {
-    link.addEventListener("mouseenter", (event) => {
-      const imageUrl = link.getAttribute("data-card-image") || "";
-      if (imageUrl) showCardHoverPreview(imageUrl, event);
-    });
+  const preview = document.getElementById("exportPreview");
+  if (!preview) return;
 
-    link.addEventListener("mousemove", (event) => {
-      moveCardHoverPreview(event);
-    });
+  preview.addEventListener("mouseover", async (event) => {
+    const link = event.target.closest(".preview-card-link");
+    if (!link || !preview.contains(link)) return;
 
-    link.addEventListener("mouseleave", () => {
-      hideCardHoverPreview();
-    });
+    const imageUrl = await resolveHoverImageUrl(link);
+    if (!imageUrl) return;
+    if (!link.matches(":hover")) return;
+
+    showCardHoverPreview(imageUrl, event);
   });
+
+  preview.addEventListener("mousemove", (event) => {
+    const link = event.target.closest(".preview-card-link");
+    if (!link || !preview.contains(link)) return;
+    moveCardHoverPreview(event);
+  });
+
+  preview.addEventListener("mouseout", (event) => {
+    const fromLink = event.target.closest(".preview-card-link");
+    if (!fromLink) return;
+
+    const toElement = event.relatedTarget;
+    if (toElement && fromLink.contains(toElement)) return;
+
+    hideCardHoverPreview();
+  });
+
+  window.addEventListener("scroll", hideCardHoverPreview, { passive: true });
+  window.addEventListener("blur", hideCardHoverPreview);
+  previewHoverBound = true;
 }
 
 
@@ -367,7 +418,7 @@ function countByType(deck) {
   };
 
   for (const card of deck || []) {
-    const typeLine = String(card.type || card.type_line || "");
+    const typeLine = String(card.type || card.type_line || "").toLowerCase();
     if (typeLine.includes("land")) counts.Land += 1;
     else if (typeLine.includes("creature")) counts.Creature += 1;
     else if (typeLine.includes("instant")) counts.Instant += 1;
@@ -382,10 +433,10 @@ function countByType(deck) {
 }
 
 function averageManaValue(deck) {
-  const spells = (deck || []).filter((card) => !String(card.type || card.type_line || "").includes("land"));
-  if (!spells.length) return "0.00";
+  const spells = (deck || []).filter((card) => !String(card.type || card.type_line || "").toLowerCase().includes("land"));
+  if (!spells.length) return "0";
   const total = spells.reduce((sum, card) => sum + (Number(card.cmc) || Number(card.mana_value) || 0), 0);
-  return (total / spells.length).toFixed(2);
+  return String(Math.round(total / spells.length));
 }
 
 function renderDeckStats(deck, commanderName, bracketInfo) {
@@ -420,7 +471,7 @@ function renderManaCurve(deck) {
 
   const buckets = [0, 0, 0, 0, 0, 0, 0, 0];
   for (const card of deck || []) {
-    const typeLine = String(card.type || card.type_line || "");
+    const typeLine = String(card.type || card.type_line || "").toLowerCase();
     if (typeLine.includes("land")) continue;
     const mv = Number(card.cmc) || Number(card.mana_value) || 0;
     const index = Math.min(Math.floor(mv), 7);
@@ -433,13 +484,14 @@ function renderManaCurve(deck) {
     type: "bar",
     data: {
       labels: ["0", "1", "2", "3", "4", "5", "6", "7+"],
-      datasets: [{ label: "Cards", data: buckets, borderRadius: 8 }]
+      datasets: [{ label: "Cards", data: buckets, borderRadius: 8, maxBarThickness: 36 }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       animation: { duration: 650 },
       plugins: { legend: { display: false } },
+      layout: { padding: 8 },
       scales: {
         x: { ticks: { color: "#cbd5e1" }, grid: { color: "rgba(255,255,255,0.05)" } },
         y: { beginAtZero: true, ticks: { precision: 0, color: "#cbd5e1" }, grid: { color: "rgba(255,255,255,0.05)" } }
@@ -474,7 +526,8 @@ function renderTypeBreakdown(deck) {
           labels: { boxWidth: 12, color: "#cbd5e1" }
         }
       },
-      cutout: "62%"
+      cutout: "62%",
+      layout: { padding: 8 }
     }
   });
 }
@@ -2157,7 +2210,8 @@ function displayExportPreview(deck, commanderName, commanderThemes, strategyProf
   preview.innerHTML = "";
 
   if (!deck?.length) {
-    renderPreviewEmptyState();
+    bindPreviewHoverImages();
+renderPreviewEmptyState();
     return;
   }
 
@@ -2503,4 +2557,5 @@ async function performBuildFromContext() {
 }
 
 
+bindPreviewHoverImages();
 renderPreviewEmptyState();
