@@ -725,7 +725,7 @@ function detectTribalThemes(cards) {
 
   for (const card of cards) {
     if (!card) continue;
-    const combined = `${card.type} ${card.text}`;
+    const combined = `${getCardType(card)} ${getCardText(card)}`;
 
     for (const tribalType of TRIBAL_TYPES) {
       const pattern = new RegExp(`\\b${tribalType}\\b`, "g");
@@ -977,7 +977,7 @@ function hasTribalType(card, tribe) {
 }
 
 function isTokenMaker(card) {
-  return card.text.includes("create") && getCardText(card).includes("token");
+  return getCardText(card).includes("create") && getCardText(card).includes("token");
 }
 
 function isSacrificeCard(card) {
@@ -1034,7 +1034,7 @@ function isLowPriorityMonoColorFixer(card, commanderColors) {
 
 function isLowPriorityMonoColorRock(card, commanderColors, profile) {
   if (commanderColors.length !== 1) return false;
-  if (!card.type.includes("artifact")) return false;
+  if (!getCardType(card).includes("artifact")) return false;
 
   const name = normalizeCardName(card.name);
   if (name === "arcane signet") return true;
@@ -1275,7 +1275,7 @@ function recommendLandCount(commanderColors) {
 }
 
 function evaluateNonbasicLand(card, commanderColors, strategyProfile, modePrefs) {
-  if (!card.type.includes("land")) return null;
+  if (!getCardType(card).includes("land")) return null;
   if (isBasicLand(card.name)) return null;
 
   const produced = Array.isArray(card.producedMana) ? card.producedMana : [];
@@ -1318,7 +1318,7 @@ function evaluateNonbasicLand(card, commanderColors, strategyProfile, modePrefs)
     name: card.name,
     role: "land",
     score,
-    type: card.type,
+    type: card.type || card.type_line || "",
     cmc: 0,
     colors: produced,
     source: "nonbasic-land"
@@ -1336,7 +1336,7 @@ function buildNonbasicManaBase(collectionData, allOwnedCardData, commanderColors
 
     const card = allOwnedCardData.get(normalizedName);
     if (!card) continue;
-    if (!card.type.includes("land")) continue;
+    if (!getCardType(card).includes("land")) continue;
     if (isBasicLand(card.name)) continue;
     if (!legalForCommander(card.colors, commanderColors)) continue;
 
@@ -1513,7 +1513,7 @@ function buildDeckFromScoredPool(
         name: card.name,
         role: detectRole(card),
         score: scoreFallbackCard(card, commanderThemes, strategyProfile, commanderColors, modePrefs) + 10,
-        type: card.type,
+        type: card.type || card.type_line || "",
         cmc: card.cmc,
         colors: card.colors
       });
@@ -1546,14 +1546,14 @@ function buildDeckFromScoredPool(
 
       const card = allOwnedCardData.get(normalizedName);
       if (!card) continue;
-      if (card.type.includes("land")) continue;
+      if (getCardType(card).includes("land")) continue;
       if (!legalForCommander(card.colors, commanderColors)) continue;
 
       fallbackPool.push({
         name: card.name,
         role: detectRole(card),
         score: scoreFallbackCard(card, commanderThemes, strategyProfile, commanderColors, modePrefs),
-        type: card.type,
+        type: card.type || card.type_line || "",
         cmc: card.cmc,
         colors: card.colors
       });
@@ -1617,11 +1617,11 @@ function mergeDeckCounts(deck) {
       map.set(key, {
         name: card.name,
         count: 1,
-        type: card.type,
+        type: card.type || card.type_line || "",
         role: card.role,
         source: card.source,
         reasons: card.reasons || [],
-        text: card.text || "",
+        text: card.text || card.oracle_text || card.rawText || "",
         cmc: card.cmc || 0
       });
     } else {
@@ -2312,7 +2312,7 @@ async function performBuildFromContext() {
       name: card.name,
       role,
       score,
-      type: card.type,
+      type: card.type || card.type_line || "",
       cmc: card.cmc,
       colors: card.colors
     });
