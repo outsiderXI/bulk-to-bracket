@@ -160,6 +160,14 @@ function normalizeCardName(name) {
   return String(name || "").trim().toLowerCase();
 }
 
+function getCardType(card) {
+  return String(card?.type || card?.type_line || "").toLowerCase();
+}
+
+function getCardText(card) {
+  return String(card?.text || card?.oracle_text || card?.rawText || "").toLowerCase();
+}
+
 function formatThemeLabel(theme) {
   if (!theme) return "";
   return String(theme)
@@ -243,7 +251,7 @@ function countByType(deck) {
   };
 
   for (const card of deck || []) {
-    const typeLine = String(card.type || card.type_line || "");
+    const typeLine = getCardType(card);
     if (typeLine.includes("land")) counts.Land += 1;
     else if (typeLine.includes("creature")) counts.Creature += 1;
     else if (typeLine.includes("instant")) counts.Instant += 1;
@@ -258,10 +266,10 @@ function countByType(deck) {
 }
 
 function averageManaValue(deck) {
-  const spells = (deck || []).filter((card) => !String(card.type || card.type_line || "").includes("land"));
-  if (!spells.length) return "0.00";
+  const spells = (deck || []).filter((card) => !getCardType(card).includes("land"));
+  if (!spells.length) return "0";
   const total = spells.reduce((sum, card) => sum + (Number(card.cmc) || Number(card.mana_value) || 0), 0);
-  return (total / spells.length).toFixed(2);
+  return String(Math.round(total / spells.length));
 }
 
 function renderDeckStats(deck, commanderName, bracketInfo) {
@@ -274,7 +282,7 @@ function renderDeckStats(deck, commanderName, bracketInfo) {
     <div class="stat-panel-header fade-up">
       <div>
         <div class="eyebrow">Deck Snapshot</div>
-        <div class="stat-panel-title">${escapeHtml(commanderName || "Commander Deck")}</div>
+        <div class="stat-panel-title">Deck Snapshot</div>
       </div>
       <div class="mini-badge">Bracket ${escapeHtml(String(bracketInfo?.bracket ?? "-"))}</div>
     </div>
@@ -296,7 +304,7 @@ function renderManaCurve(deck) {
 
   const buckets = [0, 0, 0, 0, 0, 0, 0, 0];
   for (const card of deck || []) {
-    const typeLine = String(card.type || card.type_line || "");
+    const typeLine = getCardType(card);
     if (typeLine.includes("land")) continue;
     const mv = Number(card.cmc) || Number(card.mana_value) || 0;
     const index = Math.min(Math.floor(mv), 7);
@@ -1060,8 +1068,8 @@ function isGenericStaple(card) {
 }
 
 function detectRole(card) {
-  const text = card.text;
-  const type = card.type;
+  const text = getCardText(card);
+  const type = getCardType(card);
 
   if (type.includes("land")) return "land";
 
@@ -1105,8 +1113,8 @@ function detectRole(card) {
 
 function detectCardTags(card) {
   const tags = [];
-  const text = card.text;
-  const type = card.type;
+  const text = getCardText(card);
+  const type = getCardType(card);
   const combined = `${type} ${text}`;
 
   if (text.includes("graveyard")) tags.push("graveyard");
@@ -1612,7 +1620,9 @@ function mergeDeckCounts(deck) {
         type: card.type,
         role: card.role,
         source: card.source,
-        reasons: card.reasons || []
+        reasons: card.reasons || [],
+        text: card.text || "",
+        cmc: card.cmc || 0
       });
     } else {
       const existing = map.get(key);
@@ -1695,21 +1705,11 @@ function displayThemes(themes) {
   displayThemeChips(themes);
 }
 
-function displayDeckSummary(deck, commanderName, commanderColors) {
+function displayDeckSummary() {
   const summary = document.getElementById("deckSummary");
-
-  const nonlands = deck.filter((c) => c.role !== "land").length;
-  const lands = deck.filter((c) => c.role === "land").length;
-  const creatures = deck.filter((c) => c.type.includes("creature")).length;
-  const colorText = commanderColors.length ? commanderColors.join("") : "Colorless";
-
-  summary.textContent =
-    `Commander: ${commanderName}
-Color Identity: ${colorText}
-Total Cards: ${deck.length}
-Creatures: ${creatures}
-Nonlands: ${nonlands}
-Lands: ${lands}`;
+  if (!summary) return;
+  summary.textContent = "";
+  summary.classList.add("hidden");
 }
 
 function getBracketLabel(bracket) {
@@ -1743,7 +1743,7 @@ function estimateDeckBracket(deck, commanderThemes, commanderColors, commanderNa
   const names = deck.map((c) => normalizeCardName(c.name));
   const nonlands = deck.filter((c) => c.role !== "land");
   const lands = deck.filter((c) => c.role === "land");
-  const creatures = nonlands.filter((c) => c.type.includes("creature")).length;
+  const creatures = nonlands.filter((c) => getCardType(c).includes("creature")).length;
 
   const rampCount = nonlands.filter((c) => c.role === "ramp").length;
   const drawCount = nonlands.filter((c) => c.role === "draw").length;
@@ -1906,7 +1906,7 @@ function displayBuildBreakdown(deck) {
 
 function generateWarnings(deck, commanderThemes, bracketInfo) {
   const warnings = [];
-  const creatures = deck.filter((c) => c.type.includes("creature")).length;
+  const creatures = deck.filter((c) => getCardType(c).includes("creature")).length;
   const ramp = deck.filter((c) => c.role === "ramp").length;
   const draw = deck.filter((c) => c.role === "draw").length;
   const removal = deck.filter((c) => c.role === "removal").length;
@@ -2037,6 +2037,8 @@ function displayExportPreview(deck, commanderName, commanderThemes, strategyProf
     return;
   }
 
+  try {
+
   const commanderSection = document.createElement("div");
   commanderSection.className = "preview-section fade-up";
   commanderSection.innerHTML = `<div class="preview-section-title">Commander</div>`;
@@ -2101,6 +2103,10 @@ function displayExportPreview(deck, commanderName, commanderThemes, strategyProf
 
   if (renderedSections === 0) {
     renderPreviewErrorState("The deck preview did not contain any grouped cards.");
+  }
+  } catch (error) {
+    console.error("displayExportPreview failed", error);
+    renderPreviewErrorState(error?.message || "Unable to prepare the grouped preview.");
   }
 }
 
@@ -2287,7 +2293,7 @@ async function performBuildFromContext() {
     const normalizedName = normalizeCardName(edhrecCard.name);
     const card = ownedCardData.get(normalizedName);
 
-    if (!card || card.type.includes("land") || !legalForCommander(card.colors, commanderData.colors)) {
+    if (!card || getCardType(card).includes("land") || !legalForCommander(card.colors, commanderData.colors)) {
       maybeUpdateScoringProgress(processed, totalToScore);
       continue;
     }
