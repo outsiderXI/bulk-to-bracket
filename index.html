@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MTG Commander Deck Builder: Test</title>
+  <title>MTG Commander Deck Builder</title>
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -81,11 +81,15 @@
           <div id="deckStats" class="panel stat-panel"></div>
           <div class="panel chart-panel">
             <div class="chart-title">Mana Curve</div>
-            <canvas id="manaCurveChart" height="180"></canvas>
+            <div class="chart-canvas-wrap">
+              <canvas id="manaCurveChart"></canvas>
+            </div>
           </div>
           <div class="panel chart-panel">
             <div class="chart-title">Card Type Breakdown</div>
-            <canvas id="typeBreakdownChart" height="220"></canvas>
+            <div class="chart-canvas-wrap chart-canvas-wrap-tall">
+              <canvas id="typeBreakdownChart"></canvas>
+            </div>
           </div>
         </div>
 
