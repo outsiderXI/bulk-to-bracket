@@ -421,8 +421,7 @@ button:disabled {
 
 
 .progress-panel {
-  position: sticky;
-  top: 16px;
+  position: static;
 }
 
 .dashboard-grid {
@@ -454,6 +453,8 @@ button:disabled {
 }
 
 .chart-panel canvas {
+  display: block;
+  width: 100% !important;
   flex: 1;
   min-height: 180px;
 }
@@ -606,6 +607,11 @@ button:disabled {
   background: linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.02));
   border: 1px solid rgba(255,255,255,0.08);
   box-shadow: 0 10px 24px rgba(0,0,0,0.16);
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
 }
 
 .stat-label {
@@ -619,7 +625,8 @@ button:disabled {
 .stat-value {
   font-size: 28px;
   font-weight: 800;
-  line-height: 1;
+  line-height: 1.05;
+  word-break: break-word;
 }
 
 .preview-heading {
@@ -857,4 +864,13 @@ button:disabled {
   .reason-badges {
     margin-left: 0;
   }
+}
+
+
+#deckSummary:empty {
+  display: none;
+}
+
+.progress-panel:hover {
+  transform: none;
 }
