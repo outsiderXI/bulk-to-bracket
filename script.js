@@ -171,12 +171,29 @@ function formatThemeLabel(theme) {
 }
 
 
-function getCardType(card) {
-  return String(card?.type ?? card?.type_line ?? "");
+function getCardText(card) {
+  return String(card?.text ?? card?.oracle_text ?? card?.rawText ?? "").toLowerCase();
 }
 
-function getCardText(card) {
-  return String(card?.text ?? card?.oracle_text ?? "");
+function getCardType(card) {
+  return String(card?.type ?? card?.type_line ?? card?.rawType ?? "").toLowerCase();
+}
+
+function sanitizeCard(card) {
+  if (!card) return null;
+  const type = getCardType(card);
+  const text = getCardText(card);
+  return {
+    ...card,
+    type,
+    text,
+    rawType: card.rawType ?? card.type_line ?? card.type ?? "",
+    rawText: card.rawText ?? card.oracle_text ?? card.text ?? ""
+  };
+}
+
+function sanitizeDeckCards(deck) {
+  return (deck || []).map(sanitizeCard).filter(Boolean);
 }
 
 function getCardImageUrl(card) {
@@ -881,8 +898,8 @@ async function fetchCardDataBatchWithProgress(cardNames, progressCallback) {
 }
 
 function canBeCommander(card) {
-  const type = card.type;
-  const text = card.text;
+  const type = getCardType(card);
+  const text = getCardText(card);
   if (type.includes("legendary creature")) return true;
   if (text.includes("can be your commander")) return true;
   return false;
@@ -894,7 +911,7 @@ function detectTribalThemes(cards) {
 
   for (const card of cards) {
     if (!card) continue;
-    const combined = `${card.type} ${card.text}`;
+    const combined = `${getCardType(card)} ${getCardText(card)}`;
 
     for (const tribalType of TRIBAL_TYPES) {
       const pattern = new RegExp(`\\b${tribalType}\\b`, "g");
@@ -936,13 +953,13 @@ async function detectCommanderThemes(edhrecCards, collectionData, allOwnedCardDa
     if (!legalForCommander(card.colors, commanderColors)) continue;
 
     if (
-      card.type.includes("creature") ||
-      card.text.includes("token") ||
-      card.text.includes("sacrifice") ||
-      card.text.includes("+1/+1 counter") ||
-      card.text.includes("draw") ||
-      card.text.includes("graveyard") ||
-      card.text.includes("whenever")
+      getCardType(card).includes("creature") ||
+      getCardText(card).includes("token") ||
+      getCardText(card).includes("sacrifice") ||
+      getCardText(card).includes("+1/+1 counter") ||
+      getCardText(card).includes("draw") ||
+      getCardText(card).includes("graveyard") ||
+      getCardText(card).includes("whenever")
     ) {
       ownedThemeCandidates.push(card);
     }
@@ -972,8 +989,8 @@ async function detectCommanderThemes(edhrecCards, collectionData, allOwnedCardDa
   };
 
   for (const card of combinedCards) {
-    const text = card.text;
-    const type = card.type;
+    const text = getCardText(card);
+    const type = getCardType(card);
 
     if (text.includes("each player draws") || text.includes("each opponent draws")) {
       themeCounts["group hug"] += 3;
@@ -1137,25 +1154,25 @@ function getModePreferences(mode, strategyProfile) {
 }
 
 function isCreatureCard(card) {
-  return card.type.includes("creature");
+  return getCardType(card).includes("creature");
 }
 
 function hasTribalType(card, tribe) {
   const pattern = new RegExp(`\\b${tribe}\\b`);
-  return pattern.test(`${card.type} ${card.text}`);
+  return pattern.test(`${getCardType(card)} ${getCardText(card)}`);
 }
 
 function isTokenMaker(card) {
-  return card.text.includes("create") && card.text.includes("token");
+  return getCardText(card).includes("create") && getCardText(card).includes("token");
 }
 
 function isSacrificeCard(card) {
-  return card.text.includes("sacrifice");
+  return getCardText(card).includes("sacrifice");
 }
 
 function isSynergisticMonoColorLand(card, commanderColors, profile) {
   const name = normalizeCardName(card.name);
-  const text = card.text;
+  const text = getCardText(card);
 
   if (commanderColors.length !== 1) return true;
 
@@ -1203,7 +1220,7 @@ function isLowPriorityMonoColorFixer(card, commanderColors) {
 
 function isLowPriorityMonoColorRock(card, commanderColors, profile) {
   if (commanderColors.length !== 1) return false;
-  if (!card.type.includes("artifact")) return false;
+  if (!getCardType(card).includes("artifact")) return false;
 
   const name = normalizeCardName(card.name);
   if (name === "arcane signet") return true;
@@ -1237,8 +1254,8 @@ function isGenericStaple(card) {
 }
 
 function detectRole(card) {
-  const text = card.text;
-  const type = card.type;
+  const text = getCardText(card);
+  const type = getCardType(card);
 
   if (type.includes("land")) return "land";
 
@@ -1282,8 +1299,8 @@ function detectRole(card) {
 
 function detectCardTags(card) {
   const tags = [];
-  const text = card.text;
-  const type = card.type;
+  const text = getCardText(card);
+  const type = getCardType(card);
   const combined = `${type} ${text}`;
 
   if (text.includes("graveyard")) tags.push("graveyard");
@@ -1444,13 +1461,13 @@ function recommendLandCount(commanderColors) {
 }
 
 function evaluateNonbasicLand(card, commanderColors, strategyProfile, modePrefs) {
-  if (!card.type.includes("land")) return null;
+  if (!getCardType(card).includes("land")) return null;
   if (isBasicLand(card.name)) return null;
 
   const produced = Array.isArray(card.producedMana) ? card.producedMana : [];
   const relevantProduced = produced.filter((c) => commanderColors.includes(c));
   const normalizedName = normalizeCardName(card.name);
-  const text = card.text;
+  const text = getCardText(card);
 
   let score = 0;
   score += relevantProduced.length * 4;
@@ -1487,7 +1504,7 @@ function evaluateNonbasicLand(card, commanderColors, strategyProfile, modePrefs)
     name: card.name,
     role: "land",
     score,
-    type: card.type,
+    type: getCardType(card),
     cmc: 0,
     colors: produced,
     source: "nonbasic-land"
@@ -1505,7 +1522,7 @@ function buildNonbasicManaBase(collectionData, allOwnedCardData, commanderColors
 
     const card = allOwnedCardData.get(normalizedName);
     if (!card) continue;
-    if (!card.type.includes("land")) continue;
+    if (!getCardType(card).includes("land")) continue;
     if (isBasicLand(card.name)) continue;
     if (!legalForCommander(card.colors, commanderColors)) continue;
 
@@ -1660,7 +1677,7 @@ function buildDeckFromScoredPool(
     usedNames.add(key);
   }
 
-  const currentCreatureCount = () => deck.filter((c) => c.type.includes("creature")).length;
+  const currentCreatureCount = () => deck.filter((c) => getCardType(c).includes("creature")).length;
 
   if (currentCreatureCount() < minimumCreatureCount) {
     const creatureFallbackPool = [];
@@ -1675,14 +1692,14 @@ function buildDeckFromScoredPool(
 
       const card = allOwnedCardData.get(normalizedName);
       if (!card) continue;
-      if (!card.type.includes("creature")) continue;
+      if (!getCardType(card).includes("creature")) continue;
       if (!legalForCommander(card.colors, commanderColors)) continue;
 
       creatureFallbackPool.push({
         name: card.name,
         role: detectRole(card),
         score: scoreFallbackCard(card, commanderThemes, strategyProfile, commanderColors, modePrefs) + 10,
-        type: card.type,
+        type: getCardType(card),
         cmc: card.cmc,
         colors: card.colors
       });
@@ -1715,14 +1732,14 @@ function buildDeckFromScoredPool(
 
       const card = allOwnedCardData.get(normalizedName);
       if (!card) continue;
-      if (card.type.includes("land")) continue;
+      if (getCardType(card).includes("land")) continue;
       if (!legalForCommander(card.colors, commanderColors)) continue;
 
       fallbackPool.push({
         name: card.name,
         role: detectRole(card),
         score: scoreFallbackCard(card, commanderThemes, strategyProfile, commanderColors, modePrefs),
-        type: card.type,
+        type: getCardType(card),
         cmc: card.cmc,
         colors: card.colors
       });
@@ -1786,10 +1803,13 @@ function mergeDeckCounts(deck) {
       map.set(key, {
         name: card.name,
         count: 1,
-        type: card.type,
+        type: getCardType(card),
+        text: getCardText(card),
         role: card.role,
         source: card.source,
-        reasons: card.reasons || []
+        reasons: card.reasons || [],
+        scryfallUrl: card.scryfallUrl || card.scryfall_uri || "",
+        imageUrl: getCardImageUrl(card)
       });
     } else {
       const existing = map.get(key);
@@ -1874,19 +1894,7 @@ function displayThemes(themes) {
 
 function displayDeckSummary(deck, commanderName, commanderColors) {
   const summary = document.getElementById("deckSummary");
-
-  const nonlands = deck.filter((c) => c.role !== "land").length;
-  const lands = deck.filter((c) => c.role === "land").length;
-  const creatures = deck.filter((c) => c.type.includes("creature")).length;
-  const colorText = commanderColors.length ? commanderColors.join("") : "Colorless";
-
-  summary.textContent =
-    `Commander: ${commanderName}
-Color Identity: ${colorText}
-Total Cards: ${deck.length}
-Creatures: ${creatures}
-Nonlands: ${nonlands}
-Lands: ${lands}`;
+  if (summary) summary.innerHTML = "";
 }
 
 function getBracketLabel(bracket) {
@@ -1920,7 +1928,7 @@ function estimateDeckBracket(deck, commanderThemes, commanderColors, commanderNa
   const names = deck.map((c) => normalizeCardName(c.name));
   const nonlands = deck.filter((c) => c.role !== "land");
   const lands = deck.filter((c) => c.role === "land");
-  const creatures = nonlands.filter((c) => c.type.includes("creature")).length;
+  const creatures = nonlands.filter((c) => getCardType(c).includes("creature")).length;
 
   const rampCount = nonlands.filter((c) => c.role === "ramp").length;
   const drawCount = nonlands.filter((c) => c.role === "draw").length;
@@ -2083,7 +2091,7 @@ function displayBuildBreakdown(deck) {
 
 function generateWarnings(deck, commanderThemes, bracketInfo) {
   const warnings = [];
-  const creatures = deck.filter((c) => c.type.includes("creature")).length;
+  const creatures = deck.filter((c) => getCardType(c).includes("creature")).length;
   const ramp = deck.filter((c) => c.role === "ramp").length;
   const draw = deck.filter((c) => c.role === "draw").length;
   const removal = deck.filter((c) => c.role === "removal").length;
@@ -2478,7 +2486,7 @@ async function performBuildFromContext() {
     const normalizedName = normalizeCardName(edhrecCard.name);
     const card = ownedCardData.get(normalizedName);
 
-    if (!card || card.type.includes("land") || !legalForCommander(card.colors, commanderData.colors)) {
+    if (!card || getCardType(card).includes("land") || !legalForCommander(card.colors, commanderData.colors)) {
       maybeUpdateScoringProgress(processed, totalToScore);
       continue;
     }
@@ -2497,7 +2505,7 @@ async function performBuildFromContext() {
       name: card.name,
       role,
       score,
-      type: card.type,
+      type: getCardType(card),
       cmc: card.cmc,
       colors: card.colors
     });
@@ -2531,25 +2539,27 @@ async function performBuildFromContext() {
   logMessage(`Built final deck with ${finalDeck.length} cards.`);
   logMessage(`Final deck breakdown: ${finalDeck.filter(c => c.role !== "land").length} nonlands, ${finalDeck.filter(c => c.role === "land").length} lands.`);
 
+  const sanitizedFinalDeck = sanitizeDeckCards(finalDeck);
+
   const bracketInfo = estimateDeckBracket(
-    finalDeck,
+    sanitizedFinalDeck,
     commanderThemes,
     commanderData.colors,
     commanderData.name
   );
 
-  const warnings = generateWarnings(finalDeck, commanderThemes, bracketInfo);
+  const warnings = generateWarnings(sanitizedFinalDeck, commanderThemes, bracketInfo);
 
   updateProgress(97, "Rendering results...");
-  displayDeckSummary(finalDeck, commanderData.name, commanderData.colors);
-  renderDeckStats(finalDeck, commanderData.name, bracketInfo);
+  displayDeckSummary(sanitizedFinalDeck, commanderData.name, commanderData.colors);
+  renderDeckStats(sanitizedFinalDeck, commanderData.name, bracketInfo);
   displayDeckBracket(bracketInfo);
   displayGameChangers(bracketInfo);
-  displayBuildBreakdown(finalDeck);
+  displayBuildBreakdown(sanitizedFinalDeck);
   displayWarnings(warnings);
-  displayMoxfieldExport(finalDeck, commanderData.name, commanderThemes, strategyProfile, commanderData.colors);
-  renderManaCurve(finalDeck);
-  renderTypeBreakdown(finalDeck);
+  displayMoxfieldExport(sanitizedFinalDeck, commanderData.name, commanderThemes, strategyProfile, commanderData.colors);
+  renderManaCurve(sanitizedFinalDeck);
+  renderTypeBreakdown(sanitizedFinalDeck);
 
   logMessage(`Estimated ${bracketInfo.label} (score ${bracketInfo.score}).`);
   updateProgress(100, "Deck complete!", `${finalDeck.length} cards selected`);
