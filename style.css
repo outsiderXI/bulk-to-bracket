@@ -421,8 +421,7 @@ button:disabled {
 
 
 .progress-panel {
-  position: sticky;
-  top: 16px;
+  position: static;
 }
 
 .dashboard-grid {
@@ -904,5 +903,56 @@ button:disabled {
 @media (max-width: 900px) {
   .card-hover-preview {
     display: none !important;
+  }
+}
+
+
+.results-grid > * {
+  min-width: 0;
+}
+
+.dashboard-grid {
+  align-items: stretch;
+}
+
+.dashboard-grid > .panel {
+  min-width: 0;
+}
+
+.stat-panel,
+.chart-panel {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.stat-card {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.stat-panel-title,
+.stat-value {
+  overflow-wrap: anywhere;
+}
+
+.chart-canvas-wrap {
+  position: relative;
+  width: 100%;
+  height: 220px;
+  min-height: 220px;
+  max-height: 220px;
+}
+
+.chart-panel canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+@media (max-width: 720px) {
+  .chart-canvas-wrap {
+    height: 200px;
+    min-height: 200px;
+    max-height: 200px;
   }
 }
