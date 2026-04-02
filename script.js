@@ -712,8 +712,8 @@ async function fetchCardDataBatchWithProgress(cardNames, progressCallback) {
 }
 
 function canBeCommander(card) {
-  const type = card.type;
-  const text = card.text;
+  const type = getCardType(card);
+  const text = getCardText(card);
   if (type.includes("legendary creature")) return true;
   if (text.includes("can be your commander")) return true;
   return false;
@@ -767,13 +767,13 @@ async function detectCommanderThemes(edhrecCards, collectionData, allOwnedCardDa
     if (!legalForCommander(card.colors, commanderColors)) continue;
 
     if (
-      card.type.includes("creature") ||
-      card.text.includes("token") ||
-      card.text.includes("sacrifice") ||
-      card.text.includes("+1/+1 counter") ||
-      card.text.includes("draw") ||
-      card.text.includes("graveyard") ||
-      card.text.includes("whenever")
+      getCardType(card).includes("creature") ||
+      getCardText(card).includes("token") ||
+      getCardText(card).includes("sacrifice") ||
+      getCardText(card).includes("+1/+1 counter") ||
+      getCardText(card).includes("draw") ||
+      getCardText(card).includes("graveyard") ||
+      getCardText(card).includes("whenever")
     ) {
       ownedThemeCandidates.push(card);
     }
@@ -803,8 +803,8 @@ async function detectCommanderThemes(edhrecCards, collectionData, allOwnedCardDa
   };
 
   for (const card of combinedCards) {
-    const text = card.text;
-    const type = card.type;
+    const text = getCardText(card);
+    const type = getCardType(card);
 
     if (text.includes("each player draws") || text.includes("each opponent draws")) {
       themeCounts["group hug"] += 3;
@@ -968,25 +968,25 @@ function getModePreferences(mode, strategyProfile) {
 }
 
 function isCreatureCard(card) {
-  return card.type.includes("creature");
+  return getCardType(card).includes("creature");
 }
 
 function hasTribalType(card, tribe) {
   const pattern = new RegExp(`\\b${tribe}\\b`);
-  return pattern.test(`${card.type} ${card.text}`);
+  return pattern.test(`${getCardType(card)} ${getCardText(card)}`);
 }
 
 function isTokenMaker(card) {
-  return card.text.includes("create") && card.text.includes("token");
+  return card.text.includes("create") && getCardText(card).includes("token");
 }
 
 function isSacrificeCard(card) {
-  return card.text.includes("sacrifice");
+  return getCardText(card).includes("sacrifice");
 }
 
 function isSynergisticMonoColorLand(card, commanderColors, profile) {
   const name = normalizeCardName(card.name);
-  const text = card.text;
+  const text = getCardText(card);
 
   if (commanderColors.length !== 1) return true;
 
@@ -1281,7 +1281,7 @@ function evaluateNonbasicLand(card, commanderColors, strategyProfile, modePrefs)
   const produced = Array.isArray(card.producedMana) ? card.producedMana : [];
   const relevantProduced = produced.filter((c) => commanderColors.includes(c));
   const normalizedName = normalizeCardName(card.name);
-  const text = card.text;
+  const text = getCardText(card);
 
   let score = 0;
   score += relevantProduced.length * 4;
@@ -1506,7 +1506,7 @@ function buildDeckFromScoredPool(
 
       const card = allOwnedCardData.get(normalizedName);
       if (!card) continue;
-      if (!card.type.includes("creature")) continue;
+      if (!getCardType(card).includes("creature")) continue;
       if (!legalForCommander(card.colors, commanderColors)) continue;
 
       creatureFallbackPool.push({
