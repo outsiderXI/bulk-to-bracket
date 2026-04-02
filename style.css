@@ -956,3 +956,26 @@ button:disabled {
     max-height: 200px;
   }
 }
+
+
+.priority-group {
+  margin-top: 14px;
+}
+
+.priority-group:first-of-type {
+  margin-top: 0;
+}
+
+.priority-group-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #93c5fd;
+  margin-bottom: 8px;
+}
+
+.priority-empty {
+  color: #94a3b8;
+  font-size: 13px;
+}
