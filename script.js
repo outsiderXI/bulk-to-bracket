@@ -1241,6 +1241,26 @@ async function fetchScryfallCardByName(cardName) {
   throw new Error(`Scryfall lookup failed for ${cardName}`);
 }
 
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} for ${url}`);
+    }
+
+    return await response.json();
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 async function fetchEdhrecCommanderJson(commanderName) {
   const primaryName = getPrimaryCardName(commanderName);
   const slug = toEdhrecSlug(primaryName);
@@ -1249,18 +1269,22 @@ async function fetchEdhrecCommanderJson(commanderName) {
     `${EDHREC_BASE}${slug}/${slug}.json`
   ];
 
+  let lastError = null;
+
   for (const url of urls) {
-    try {
-      const response = await fetch(url);
-      if (response.ok) {
-        return await response.json();
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        return await fetchJsonWithTimeout(url, {}, 12000);
+      } catch (error) {
+        lastError = error;
+        console.warn(`EDHREC fetch failed (attempt ${attempt})`, url, error);
+        await sleep(300 * attempt);
       }
-    } catch (error) {
-      console.warn("EDHREC fetch failed", url, error);
     }
   }
 
-  throw new Error(`Failed to fetch EDHREC commander data for ${commanderName}.`);
+  console.warn(`Failed to fetch EDHREC commander data for ${commanderName}.`, lastError);
+  return null;
 }
 
 function convertScryfallCard(data) {
@@ -1299,8 +1323,26 @@ async function getCommander(name) {
 
 async function getEDHREC(commanderName) {
   const data = await fetchEdhrecCommanderJson(commanderName);
+  if (!data) {
+    return {
+      cards: [],
+      tags: [],
+      typeAverages: null,
+      roleTargets: null,
+      unavailable: true
+    };
+  }
+
   const cardlists = data?.container?.json_dict?.cardlists;
-  if (!Array.isArray(cardlists)) throw new Error("Unexpected EDHREC response format.");
+  if (!Array.isArray(cardlists)) {
+    return {
+      cards: [],
+      tags: [],
+      typeAverages: null,
+      roleTargets: null,
+      unavailable: true
+    };
+  }
 
   const deduped = new Map();
 
@@ -1336,7 +1378,8 @@ async function getEDHREC(commanderName) {
     cards: Array.from(deduped.values()),
     tags,
     typeAverages,
-    roleTargets
+    roleTargets,
+    unavailable: false
   };
 }
 
@@ -1910,15 +1953,13 @@ async function detectCommanderThemes(edhrecCards, edhrecTags, collectionData, al
     return cleanedTags.slice(0, 5);
   }
 
+  const themeCards = [];
   const topSynergy = [...edhrecCards]
     .sort((a, b) => b.synergy - a.synergy)
     .slice(0, 36);
 
-  const edhrecCardMap = await fetchCardDataBatchWithProgress(topSynergy.map((c) => c.name));
-  const themeCards = [];
-
   for (const entry of topSynergy) {
-    const card = edhrecCardMap.get(normalizeCardName(entry.name));
+    const card = allOwnedCardData.get(normalizeCardName(entry.name));
     if (card) themeCards.push(card);
   }
 
@@ -3493,8 +3534,14 @@ async function generateDeck() {
     const edhrecData = await getEDHREC(commanderData.name);
     const edhrecCards = Array.isArray(edhrecData?.cards) ? edhrecData.cards : [];
     const edhrecTags = Array.isArray(edhrecData?.tags) ? edhrecData.tags : [];
-    if (!edhrecCards.length) throw new Error("No EDHREC data returned for this commander.");
-    logMessage(`EDHREC returned ${edhrecCards.length} candidate cards.`);
+    if (edhrecData?.unavailable) {
+      logMessage("EDHREC could not be reached. Continuing with Scryfall + collection-based build logic.");
+    }
+    if (!edhrecCards.length) {
+      logMessage("No EDHREC card data available. Falling back to collection/theme-based build logic.");
+    } else {
+      logMessage(`EDHREC returned ${edhrecCards.length} candidate cards.`);
+    }
     if (edhrecTags.length) {
       logMessage(`Using EDHREC tags: ${edhrecTags.map(formatThemeLabel).join(", ")}`);
     }
@@ -3513,7 +3560,7 @@ async function generateDeck() {
       if (roleSummary) logMessage(`Using EDHREC support package targets: ${roleSummary}`);
     }
 
-    updateProgress(30, "Fetching collection metadata for theme discovery...");
+    updateProgress(30, "Fetching collection metadata (single pass)...");
     const allOwnedNames = Array.isArray(collection.uniqueRawNames)
       ? collection.uniqueRawNames
       : getCollectionEntries(collection).map((x) => x.rawName);
@@ -3521,12 +3568,12 @@ async function generateDeck() {
       allOwnedNames,
       (done, total) => {
         const pct = 30 + Math.floor((done / Math.max(total, 1)) * 18);
-        updateProgress(pct, "Fetching collection metadata for theme discovery...", `Fetched ${done} / ${total}`);
+        updateProgress(pct, "Fetching collection metadata (single pass)...", `Fetched ${done} / ${total}`);
       }
     );
 
     updateProgress(50, "Detecting commander themes...");
-    logMessage("Analyzing EDHREC and your collection to infer deck themes.");
+    logMessage("Analyzing EDHREC and your fetched collection metadata to infer deck themes.");
     const commanderThemes = await detectCommanderThemes(
       edhrecCards,
       edhrecTags,
@@ -3539,19 +3586,31 @@ async function generateDeck() {
     logMessage(`Detected themes: ${commanderThemes.join(", ") || "none"}`);
 
     updateProgress(58, "Matching your collection...");
-    const ownedCandidates = edhrecCards.filter((c) => hasOwnedCard(collection, c.name));
-    logMessage(`${ownedCandidates.length} EDHREC cards overlap with your collection or basic lands.`);
+    const ownedCandidates = edhrecCards.length
+      ? edhrecCards.filter((c) => hasOwnedCard(collection, c.name))
+      : getCollectionEntries(collection).map((entry) => ({
+          name: entry.rawName,
+          synergy: 0,
+          decks: 0,
+          label: "Collection Fallback",
+          labels: ["Collection Fallback"]
+        }));
 
-    updateProgress(66, "Fetching EDHREC-overlap metadata...");
-    const ownedCardData = await fetchCardDataBatchWithProgress(
-      ownedCandidates.map((c) => c.name),
-      (done, total) => {
-        const pct = 66 + Math.floor((done / Math.max(total, 1)) * 10);
-        updateProgress(pct, "Fetching EDHREC-overlap metadata...", `Fetched ${done} / ${total}`);
-      }
-    );
+    if (edhrecCards.length) {
+      logMessage(`${ownedCandidates.length} EDHREC cards overlap with your collection or basic lands.`);
+    } else {
+      logMessage(`${ownedCandidates.length} owned cards available for collection-based fallback scoring.`);
+    }
 
-    logMessage(`Received metadata for ${ownedCardData.size} owned candidate cards.`);
+    updateProgress(66, "Reusing fetched collection metadata for candidate scoring...");
+    const ownedCardData = new Map();
+    for (const candidate of ownedCandidates) {
+      const normalizedName = normalizeCardName(candidate.name);
+      if (!allOwnedCardData.has(normalizedName)) continue;
+      ownedCardData.set(normalizedName, allOwnedCardData.get(normalizedName));
+    }
+
+    logMessage(`Reused cached metadata for ${ownedCardData.size} candidate cards for scoring.`);
 
     currentRunContext = {
       commanderData,
@@ -3626,7 +3685,15 @@ async function performBuildFromContext() {
   updateProgress(78, "Checking legality and scoring cards...");
   const scoredNonlands = [];
   let processed = 0;
-  const ownedCandidates = edhrecCards.filter((c) => hasOwnedCard(collection, c.name));
+  const ownedCandidates = Array.isArray(edhrecCards) && edhrecCards.length
+    ? edhrecCards.filter((c) => hasOwnedCard(collection, c.name))
+    : getCollectionEntries(collection).map((entry) => ({
+        name: entry.rawName,
+        synergy: 0,
+        decks: 0,
+        label: "Collection Fallback",
+        labels: ["Collection Fallback"]
+      }));
   const totalToScore = ownedCandidates.length;
 
   for (const edhrecCard of ownedCandidates) {
@@ -3677,7 +3744,11 @@ async function performBuildFromContext() {
     }
   }
 
-  logMessage(`After legality checks, ${scoredNonlands.length} nonland cards remain in the EDHREC candidate pool.`);
+  logMessage(
+    Array.isArray(edhrecCards) && edhrecCards.length
+      ? `After legality checks, ${scoredNonlands.length} nonland cards remain in the EDHREC candidate pool.`
+      : `After legality checks, ${scoredNonlands.length} nonland cards remain in the collection fallback pool.`
+  );
   renderPriorityButtons(commanderThemes);
 
   updateProgress(90, "Building deck structure and mana base...");
