@@ -2,11 +2,6 @@ const SCRYFALL_NAMED = "https://api.scryfall.com/cards/named?exact=";
 const SCRYFALL_AUTOCOMPLETE = "https://api.scryfall.com/cards/autocomplete?q=";
 const SCRYFALL_COLLECTION = "https://api.scryfall.com/cards/collection";
 const EDHREC_BASE = "https://json.edhrec.com/pages/commanders/";
-const EDHREC_CORS_PROXIES = [
-  (url) => url,
-  (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  (url) => `https://cors.isomorphic-git.org/${url}`
-];
 const SCRYFALL_CARD_SEARCH = "https://scryfall.com/search?q=!";
 
 const commanderInput = document.getElementById("commanderInput");
@@ -621,7 +616,7 @@ async function resolveHoverImageUrl(link) {
   }
 
   try {
-    const response = await fetchWithRetry(`${SCRYFALL_NAMED}${encodeURIComponent(cardName)}`);
+    const response = await fetch(`${SCRYFALL_NAMED}${encodeURIComponent(cardName)}`);
     if (!response.ok) throw new Error(`Failed to fetch image for ${cardName}`);
     const data = await response.json();
     const imageUrl = getCardImageUrl(data);
@@ -982,7 +977,7 @@ function onAutocompleteKeydown(event) {
 }
 
 async function fetchCommanderAutocomplete(query) {
-  const response = await fetchWithRetry(`${SCRYFALL_AUTOCOMPLETE}${encodeURIComponent(query)}`);
+  const response = await fetch(`${SCRYFALL_AUTOCOMPLETE}${encodeURIComponent(query)}`);
   if (!response.ok) throw new Error("Autocomplete request failed.");
   const data = await response.json();
   return Array.isArray(data.data) ? data.data.slice(0, 12) : [];
@@ -1106,38 +1101,6 @@ async function parseCSV(file) {
   });
 }
 
-async function fetchWithRetry(url, options = {}, retryCount = 1, timeoutMs = 15000) {
-  let lastError = null;
-
-  for (let attempt = 0; attempt <= retryCount; attempt += 1) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-    try {
-      const response = await fetch(url, { ...options, signal: controller.signal });
-      clearTimeout(timer);
-      return response;
-    } catch (error) {
-      clearTimeout(timer);
-      lastError = error;
-      if (attempt < retryCount) await sleep(250 * (attempt + 1));
-    }
-  }
-
-  throw lastError || new Error(`Network request failed for ${url}`);
-}
-
-function buildEdhrecCommanderUrls(commanderName) {
-  const primaryName = getPrimaryCardName(commanderName);
-  const slug = toEdhrecSlug(primaryName);
-  const baseUrls = [
-    `${EDHREC_BASE}${slug}.json`,
-    `${EDHREC_BASE}${slug}/${slug}.json`
-  ];
-
-  return baseUrls.flatMap((baseUrl) => EDHREC_CORS_PROXIES.map((proxyFactory) => proxyFactory(baseUrl)));
-}
-
 function toEdhrecSlug(name) {
   return slugifyForEdhrec(name);
 }
@@ -1156,33 +1119,35 @@ async function fetchScryfallCardByName(cardName) {
   const cleaned = cleanCardNameForLookup(cardName);
   if (!cleaned) throw new Error("Missing card name for Scryfall lookup.");
 
-  let response = await fetchWithRetry(`${SCRYFALL_NAMED}${encodeCardNameForScryfall(cleaned)}`);
+  let response = await fetch(`${SCRYFALL_NAMED}${encodeCardNameForScryfall(cleaned)}`);
   if (response.ok) return await response.json();
 
-  response = await fetchWithRetry(`https://api.scryfall.com/cards/named?fuzzy=${encodeCardNameForScryfall(cleaned)}`);
+  response = await fetch(`https://api.scryfall.com/cards/named?fuzzy=${encodeCardNameForScryfall(cleaned)}`);
   if (response.ok) return await response.json();
 
   throw new Error(`Scryfall lookup failed for ${cardName}`);
 }
 
 async function fetchEdhrecCommanderJson(commanderName) {
-  const urls = buildEdhrecCommanderUrls(commanderName);
-  let lastError = null;
+  const primaryName = getPrimaryCardName(commanderName);
+  const slug = toEdhrecSlug(primaryName);
+  const urls = [
+    `${EDHREC_BASE}${slug}.json`,
+    `${EDHREC_BASE}${slug}/${slug}.json`
+  ];
 
   for (const url of urls) {
     try {
-      const response = await fetchWithRetry(url, {}, 1, 12000);
+      const response = await fetch(url);
       if (response.ok) {
         return await response.json();
       }
-      lastError = new Error(`EDHREC request returned ${response.status} for ${url}`);
     } catch (error) {
-      lastError = error;
       console.warn("EDHREC fetch failed", url, error);
     }
   }
 
-  throw lastError || new Error(`Failed to fetch EDHREC commander data for ${commanderName}.`);
+  throw new Error(`Failed to fetch EDHREC commander data for ${commanderName}.`);
 }
 
 function convertScryfallCard(data) {
@@ -1636,7 +1601,7 @@ async function fetchCardDataBatchWithProgress(cardNames, progressCallback) {
     const chunk = missingNames.slice(i, i + chunkSize);
     const identifiers = chunk.map((name) => ({ name }));
 
-    const response = await fetchWithRetry(SCRYFALL_COLLECTION, {
+    const response = await fetch(SCRYFALL_COLLECTION, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ identifiers })
@@ -3157,20 +3122,11 @@ async function generateDeck() {
 
     updateProgress(18, "Fetching EDHREC synergy data...");
     logMessage("Loading commander recommendations from EDHREC.");
-    let edhrecData = { cards: [], tags: [], typeAverages: null, roleTargets: null };
-    try {
-      edhrecData = await getEDHREC(commanderData.name);
-    } catch (error) {
-      console.warn("Continuing without EDHREC data.", error);
-      logMessage(`WARNING: EDHREC could not be reached (${error?.message || "network error"}). Falling back to theme-aware collection scoring.`);
-    }
+    const edhrecData = await getEDHREC(commanderData.name);
     const edhrecCards = Array.isArray(edhrecData?.cards) ? edhrecData.cards : [];
     const edhrecTags = Array.isArray(edhrecData?.tags) ? edhrecData.tags : [];
-    if (edhrecCards.length) {
-      logMessage(`EDHREC returned ${edhrecCards.length} candidate cards.`);
-    } else {
-      logMessage("No EDHREC card candidates available; using collection backfill and theme scoring only.");
-    }
+    if (!edhrecCards.length) throw new Error("No EDHREC data returned for this commander.");
+    logMessage(`EDHREC returned ${edhrecCards.length} candidate cards.`);
     if (edhrecTags.length) {
       logMessage(`Using EDHREC tags: ${edhrecTags.map(formatThemeLabel).join(", ")}`);
     }
