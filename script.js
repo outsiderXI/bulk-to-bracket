@@ -1859,30 +1859,25 @@ async function fetchCardDataBatchWithProgress(cardNames, progressCallback) {
     );
   }
 
-  const chunkSize = 75;
+  const chunkSize = 50;
   const chunks = [];
   for (let i = 0; i < missingNames.length; i += chunkSize) {
     chunks.push(missingNames.slice(i, i + chunkSize));
   }
 
-  let chunkIndex = 0;
-  const maxConcurrent = 2;
+  async function fetchChunk(chunk, attempt = 1) {
+    const identifiers = chunk.map((name) => ({ name }));
 
-  async function worker() {
-    while (true) {
-      const index = chunkIndex++;
-      if (index >= chunks.length) return;
-
-      const chunk = chunks[index];
-      const identifiers = chunk.map((name) => ({ name }));
-
+    try {
       const response = await fetch(SCRYFALL_COLLECTION, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ identifiers })
       });
 
-      if (!response.ok) throw new Error("Scryfall collection request failed.");
+      if (!response.ok) {
+        throw new Error(`Scryfall collection request failed with status ${response.status}.`);
+      }
 
       const data = await response.json();
       const returnedCards = Array.isArray(data.data) ? data.data : [];
@@ -1895,16 +1890,27 @@ async function fetchCardDataBatchWithProgress(cardNames, progressCallback) {
       for (const requestedName of chunk) {
         if (!cardCache.has(requestedName)) cardCache.set(requestedName, null);
       }
+    } catch (error) {
+      if (attempt < 4) {
+        const waitMs = 300 * attempt;
+        console.warn(`Retrying Scryfall chunk (${attempt}) after failure.`, error);
+        await sleep(waitMs);
+        return fetchChunk(chunk, attempt + 1);
+      }
 
-      done += chunk.length;
-      if (progressCallback) progressCallback(done, total);
-      await sleep(15);
+      console.warn("Scryfall chunk failed after retries; marking cards as unavailable.", error);
+      for (const requestedName of chunk) {
+        if (!cardCache.has(requestedName)) cardCache.set(requestedName, null);
+      }
     }
   }
 
-  await Promise.all(
-    Array.from({ length: Math.min(maxConcurrent, chunks.length) }, () => worker())
-  );
+  for (const chunk of chunks) {
+    await fetchChunk(chunk);
+    done += chunk.length;
+    if (progressCallback) progressCallback(done, total);
+    await sleep(120);
+  }
 
   persistCardCacheToStorage();
 
