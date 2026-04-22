@@ -1859,7 +1859,7 @@ async function fetchCardDataBatchWithProgress(cardNames, progressCallback) {
     );
   }
 
-  const chunkSize = 50;
+  const chunkSize = 75;
   const chunks = [];
   for (let i = 0; i < missingNames.length; i += chunkSize) {
     chunks.push(missingNames.slice(i, i + chunkSize));
@@ -3566,7 +3566,7 @@ async function generateDeck() {
       if (roleSummary) logMessage(`Using EDHREC support package targets: ${roleSummary}`);
     }
 
-    updateProgress(30, "Fetching collection metadata (single pass)...");
+    updateProgress(30, "Analyzing all cards in collection...");
     const allOwnedNames = Array.isArray(collection.uniqueRawNames)
       ? collection.uniqueRawNames
       : getCollectionEntries(collection).map((x) => x.rawName);
@@ -3574,7 +3574,7 @@ async function generateDeck() {
       allOwnedNames,
       (done, total) => {
         const pct = 30 + Math.floor((done / Math.max(total, 1)) * 18);
-        updateProgress(pct, "Fetching collection metadata (single pass)...", `Fetched ${done} / ${total}`);
+        updateProgress(pct, "Analyzing all cards in collection...", `Fetched ${done} / ${total}`);
       }
     );
 
